@@ -3,6 +3,7 @@ pragma solidity ^0.8.0;
  
 // Foundry libraries
 import {Test} from "forge-std/Test.sol";
+import {console} from "forge-std/console.sol";
  
 import {Deployers} from "@uniswap/v4-core/test/utils/Deployers.sol";
 import {PoolSwapTest} from "v4-core/test/PoolSwapTest.sol";
@@ -44,7 +45,7 @@ contract SwapbookV2Test is Test, Deployers, ERC1155Holder {
     
         // Deploy our hook
         uint160 flags = uint160(
-            Hooks.AFTER_INITIALIZE_FLAG | Hooks.AFTER_SWAP_FLAG
+            Hooks.AFTER_INITIALIZE_FLAG | Hooks.BEFORE_SWAP_FLAG
         );
         address hookAddress = address(flags);
         deployCodeTo(
@@ -166,6 +167,108 @@ contract SwapbookV2Test is Test, Deployers, ERC1155Holder {
     
         tokenBalance = hook.balanceOf(address(this), orderId);
         assertEq(tokenBalance, 0);
+    }
+
+    function test_beforeSwapOrderMatching() public {
+        address user1 = address(0x1);
+        address user2 = address(0x2);
+        
+        // Setup users
+        _setupUsers(user1, user2);
+        
+        // Record balances BEFORE placing the order
+        uint256 user1Token0Before = token0.balanceOf(user1);
+        uint256 user1Token1Before = token1.balanceOf(user1);
+        uint256 user2Token0Before = token0.balanceOf(user2);
+        uint256 user2Token1Before = token1.balanceOf(user2);
+        
+        // User1 places limit order
+        uint256 orderId = _placeLimitOrder(user1);
+        
+        // User2 performs swap
+        _performSwap(user2);
+        
+        // Check order was filled and redeem
+        uint256 claimableOutput = hook.claimableOutputTokens(orderId);
+        assertTrue(claimableOutput > 0, "Order should have been filled through beforeSwap");
+        
+        vm.startPrank(user1);
+        hook.redeem(key, 60, true, 5e18);
+        vm.stopPrank();
+        
+        // Debug and verify results
+        _debugAndVerify(user1, user2, user1Token0Before, user1Token1Before, user2Token0Before, user2Token1Before);
+    }
+    
+    function _setupUsers(address user1, address user2) internal {
+        vm.startPrank(address(manager));
+        MockERC20(Currency.unwrap(token0)).mint(user1, 10e18);
+        MockERC20(Currency.unwrap(token1)).mint(user1, 10e18);
+        MockERC20(Currency.unwrap(token0)).mint(user2, 10e18);
+        MockERC20(Currency.unwrap(token1)).mint(user2, 10e18);
+        vm.stopPrank();
+        
+        vm.startPrank(user1);
+        MockERC20(Currency.unwrap(token0)).approve(address(hook), type(uint256).max);
+        MockERC20(Currency.unwrap(token1)).approve(address(hook), type(uint256).max);
+        vm.stopPrank();
+        
+        vm.startPrank(user2);
+        MockERC20(Currency.unwrap(token0)).approve(address(swapRouter), type(uint256).max);
+        MockERC20(Currency.unwrap(token1)).approve(address(swapRouter), type(uint256).max);
+        vm.stopPrank();
+    }
+    
+    function _placeLimitOrder(address user) internal returns (uint256) {
+        vm.startPrank(user);
+        int24 tickLower = hook.placeOrder(key, 60, true, 5e18);
+        assertEq(tickLower, 60);
+        uint256 orderId = hook.getOrderId(key, tickLower, true);
+        uint256 tokenBalance = hook.balanceOf(user, orderId);
+        assertEq(tokenBalance, 5e18);
+        vm.stopPrank();
+        return orderId;
+    }
+    
+    function _performSwap(address user) internal {
+        vm.startPrank(user);
+        swapRouter.swap(
+            key,
+            SwapParams({
+                zeroForOne: false,
+                amountSpecified: -int256(1e18),
+                sqrtPriceLimitX96: TickMath.MAX_SQRT_PRICE - 1
+            }),
+            PoolSwapTest.TestSettings({
+                takeClaims: false,
+                settleUsingBurn: false
+            }),
+            ZERO_BYTES
+        );
+        vm.stopPrank();
+    }
+    
+    function _debugAndVerify(address user1, address user2, uint256 user1Token0Before, uint256 user1Token1Before, uint256 user2Token0Before, uint256 user2Token1Before) internal {
+        console.log("=== USER1 (Limit Order Seller) ===");
+        console.log("Token0 Before:", user1Token0Before);
+        console.log("Token0 After:", token0.balanceOf(user1));
+        console.log("Token0 Difference:", int256(token0.balanceOf(user1)) - int256(user1Token0Before));
+        console.log("Token1 Before:", user1Token1Before);
+        console.log("Token1 After:", token1.balanceOf(user1));
+        console.log("Token1 Difference:", int256(token1.balanceOf(user1)) - int256(user1Token1Before));
+        
+        console.log("=== USER2 (Swap Buyer) ===");
+        console.log("Token0 Before:", user2Token0Before);
+        console.log("Token0 After:", token0.balanceOf(user2));
+        console.log("Token0 Difference:", int256(token0.balanceOf(user2)) - int256(user2Token0Before));
+        console.log("Token1 Before:", user2Token1Before);
+        console.log("Token1 After:", token1.balanceOf(user2));
+        console.log("Token1 Difference:", int256(token1.balanceOf(user2)) - int256(user2Token1Before));
+        
+        assertTrue(token0.balanceOf(user1) < user1Token0Before, "User1 should have lost token0 from selling");
+        assertTrue(token1.balanceOf(user1) > user1Token1Before, "User1 should have gained token1 from selling");
+        assertTrue(token0.balanceOf(user2) > user2Token0Before, "User2 should have gained token0 from buying");
+        assertTrue(token1.balanceOf(user2) < user2Token1Before, "User2 should have lost token1 from buying");
     }
 
 }

@@ -17,6 +17,7 @@ import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
  
 import {TickMath} from "v4-core/libraries/TickMath.sol";
 import {BalanceDelta} from "v4-core/types/BalanceDelta.sol";
+import {BeforeSwapDelta, BeforeSwapDeltaLibrary} from "v4-core/types/BeforeSwapDelta.sol";
  
 import {FixedPointMathLib} from "solmate/src/utils/FixedPointMathLib.sol";
  
@@ -29,11 +30,16 @@ contract SwapbookV2 is BaseHook, ERC1155 {
     error NothingToClaim();
     error NotEnoughToClaim();
  
+    // PoolId => ZeroForOne / OneForZero => Best Tick
+    mapping(
+        PoolId _poolId => mapping(
+            bool zeroForOne => int24 bestTick)) public bestTicks;
+    
     // PoolId => Tick => ZeroForOne / OneForZero => Tokens to Sell
     mapping(
         PoolId _poolId => mapping(
             int24 tickToSellAt => mapping(
-                bool zeroForOne => uint256 inputAmount))) public bestPendingOrders;
+                bool zeroForOne => uint256 inputAmount))) public pendingOrders;
 
     mapping (uint256 orderId => uint claimSupply) public claimTokensSupply;
 
@@ -63,8 +69,8 @@ contract SwapbookV2 is BaseHook, ERC1155 {
                 afterAddLiquidity: false,
                 beforeRemoveLiquidity: false,
                 afterRemoveLiquidity: false,
-                beforeSwap: false,
-                afterSwap: true,
+                beforeSwap: true,
+                afterSwap: false,
                 beforeDonate: false,
                 afterDonate: false,
                 beforeSwapReturnDelta: false,
@@ -84,15 +90,27 @@ contract SwapbookV2 is BaseHook, ERC1155 {
         return this.afterInitialize.selector;
     }
     
-    function _afterSwap(
+    function _beforeSwap(
         address sender,
         PoolKey calldata key,
         SwapParams calldata params,
-        BalanceDelta,
         bytes calldata
-    ) internal override returns (bytes4, int128) {
-        // TODO: Implement
-        return (this.afterSwap.selector, 0);
+    ) internal override returns (bytes4, BeforeSwapDelta, uint24) {
+        // Don't process if the swap was initiated by this hook to avoid recursion
+        if (sender == address(this)) return (this.beforeSwap.selector, BeforeSwapDeltaLibrary.ZERO_DELTA, 0);
+
+        // Check if we have a better price in our order book
+        bool hasBetterPrice = checkForBetterPrice(key, params);
+        
+        if (hasBetterPrice) {
+            // Execute the swap through our order book instead of the pool
+            executeSwapThroughOrderBook(key, params);
+            // Return a non-zero delta to indicate we've handled the swap
+            return (this.beforeSwap.selector, BeforeSwapDeltaLibrary.ZERO_DELTA, 0);
+        }
+
+        // Let the swap proceed through the pool normally
+        return (this.beforeSwap.selector, BeforeSwapDeltaLibrary.ZERO_DELTA, 0);
     }
 
     function getLowerUsableTick(
@@ -131,7 +149,15 @@ contract SwapbookV2 is BaseHook, ERC1155 {
         // Get lower actually usable tick given `tickToSellAt`
         int24 tick = getLowerUsableTick(tickToSellAt, key.tickSpacing);
         // Create a pending order
-        bestPendingOrders[key.toId()][tick][zeroForOne] += inputAmount;
+        pendingOrders[key.toId()][tick][zeroForOne] += inputAmount;
+        
+        // Update best tick for this direction
+        int24 currentBestTick = bestTicks[key.toId()][zeroForOne];
+        if (currentBestTick == 0 || // No previous order
+            (zeroForOne && tick > currentBestTick) || // For zeroForOne, higher tick = better price
+            (!zeroForOne && tick < currentBestTick)) { // For oneForZero, lower tick = better price
+            bestTicks[key.toId()][zeroForOne] = tick;
+        }
     
         // Mint claim tokens to user equal to their `inputAmount`
         uint256 orderId = getOrderId(key, tick, zeroForOne);
@@ -164,7 +190,7 @@ contract SwapbookV2 is BaseHook, ERC1155 {
         if (positionTokens < amountToCancel) revert NotEnoughToClaim();
     
         // Remove their `amountToCancel` worth of position from pending orders
-        bestPendingOrders[key.toId()][tick][zeroForOne] -= amountToCancel;
+        pendingOrders[key.toId()][tick][zeroForOne] -= amountToCancel;
         // Reduce claim token total supply and burn their share
         claimTokensSupply[orderId] -= amountToCancel;
         _burn(msg.sender, orderId, amountToCancel);
@@ -172,6 +198,174 @@ contract SwapbookV2 is BaseHook, ERC1155 {
         // Send them their input token
         Currency token = zeroForOne ? key.currency0 : key.currency1;
         token.transfer(msg.sender, amountToCancel);
+    }
+
+    function redeem(
+        PoolKey calldata key,
+        int24 tickToSellAt,
+        bool zeroForOne,
+        uint256 inputAmountToClaimFor
+    ) external {
+        // Get lower actually usable tick for their order
+        int24 tick = getLowerUsableTick(tickToSellAt, key.tickSpacing);
+        uint256 orderId = getOrderId(key, tick, zeroForOne);
+
+        // If no output tokens can be claimed yet i.e. order hasn't been filled
+        // throw error
+        if (claimableOutputTokens[orderId] == 0) revert NothingToClaim();
+
+        // they must have claim tokens >= inputAmountToClaimFor
+        uint256 claimTokens = balanceOf(msg.sender, orderId);
+        if (claimTokens < inputAmountToClaimFor) revert NotEnoughToClaim();
+
+        uint256 totalClaimableForPosition = claimableOutputTokens[orderId];
+        uint256 totalInputAmountForPosition = claimTokensSupply[orderId];
+
+        // outputAmount = (inputAmountToClaimFor * totalClaimableForPosition) / (totalInputAmountForPosition)
+        uint256 outputAmount = inputAmountToClaimFor.mulDivDown(
+            totalClaimableForPosition,
+            totalInputAmountForPosition
+        );
+
+        // Reduce claimable output tokens amount
+        // Reduce claim token total supply for position
+        // Burn claim tokens
+        claimableOutputTokens[orderId] -= outputAmount;
+        claimTokensSupply[orderId] -= inputAmountToClaimFor;
+        _burn(msg.sender, orderId, inputAmountToClaimFor);
+
+        // Transfer output tokens
+        Currency token = zeroForOne ? key.currency1 : key.currency0;
+        token.transfer(msg.sender, outputAmount);
+    }
+
+    function swapAndSettleBalances(
+        PoolKey calldata key,
+        SwapParams memory params
+    ) internal returns (BalanceDelta) {
+        // Conduct the swap inside the Pool Manager
+        BalanceDelta delta = poolManager.swap(key, params, "");
+    
+        // If we just did a zeroForOne swap
+        // We need to send Token 0 to PM, and receive Token 1 from PM
+        if (params.zeroForOne) {
+            // Negative Value => Money leaving user's wallet
+            // Settle with PoolManager
+            if (delta.amount0() < 0) {
+                _settle(key.currency0, uint128(-delta.amount0()));
+            }
+    
+            // Positive Value => Money coming into user's wallet
+            // Take from PM
+            if (delta.amount1() > 0) {
+                _take(key.currency1, uint128(delta.amount1()));
+            }
+        } else {
+            if (delta.amount1() < 0) {
+                _settle(key.currency1, uint128(-delta.amount1()));
+            }
+    
+            if (delta.amount0() > 0) {
+                _take(key.currency0, uint128(delta.amount0()));
+            }
+        }
+    
+        return delta;
+    }
+    
+    function _settle(Currency currency, uint128 amount) internal {
+        // Transfer tokens to PM and let it know
+        poolManager.sync(currency);
+        currency.transfer(address(poolManager), amount);
+        poolManager.settle();
+    }
+    
+    function _take(Currency currency, uint128 amount) internal {
+        // Take tokens out of PM to our hook contract
+        poolManager.take(currency, address(this), amount);
+    }
+
+    function executeOrder(
+        PoolKey calldata key,
+        int24 tick,
+        bool zeroForOne,
+        uint256 inputAmount
+    ) internal {
+        // Do the actual swap and settle all balances
+        BalanceDelta delta = swapAndSettleBalances(
+            key,
+            SwapParams({
+                zeroForOne: zeroForOne,
+                // We provide a negative value here to signify an "exact input for output" swap
+                amountSpecified: -int256(inputAmount),
+                // No slippage limits (maximum slippage possible)
+                sqrtPriceLimitX96: zeroForOne
+                    ? TickMath.MIN_SQRT_PRICE + 1
+                    : TickMath.MAX_SQRT_PRICE - 1
+            })
+        );
+
+        // `inputAmount` has been deducted from this position
+        pendingOrders[key.toId()][tick][zeroForOne] -= inputAmount;
+        uint256 orderId = getOrderId(key, tick, zeroForOne);
+        uint256 outputAmount = zeroForOne
+            ? uint256(int256(delta.amount1()))
+            : uint256(int256(delta.amount0()));
+
+        // `outputAmount` worth of tokens now can be claimed/redeemed by position holders
+        claimableOutputTokens[orderId] += outputAmount;
+    }
+
+    function checkForBetterPrice(
+        PoolKey calldata key,
+        SwapParams calldata params
+    ) internal view returns (bool) {
+        // Get current pool price
+        (, int24 currentTick, , ) = poolManager.getSlot0(key.toId());
+        
+        // Get our best price for the opposite direction
+        // If user wants to swap zeroForOne (buy token0 with token1), 
+        // we check if we have zeroForOne orders (sell token0 for token1) that can fulfill this
+        // If user wants to swap oneForZero (buy token1 with token0),
+        // we check if we have oneForZero orders (sell token1 for token0) that can fulfill this
+        bool checkDirection = !params.zeroForOne;
+        int24 bestTick = bestTicks[key.toId()][checkDirection];
+        
+        if (bestTick == 0) {
+            return false; // No orders in our book
+        }
+        
+        // Check if our best price is better than the pool price
+        if (checkDirection) {
+            // For zeroForOne orders, higher tick = better price
+            // Our best price is better if bestTick > currentTick
+            return bestTick > currentTick;
+        } else {
+            // For oneForZero orders, lower tick = better price  
+            // Our best price is better if bestTick < currentTick
+            return bestTick < currentTick;
+        }
+    }
+
+    function executeSwapThroughOrderBook(
+        PoolKey calldata key,
+        SwapParams calldata params
+    ) internal {
+        // Get the best order for the opposite direction as the swap
+        bool executeDirection = !params.zeroForOne;
+        int24 bestTick = bestTicks[key.toId()][executeDirection];
+        
+        if (bestTick == 0) {
+            return; // No orders available
+        }
+        
+        uint256 availableAmount = pendingOrders[key.toId()][bestTick][executeDirection];
+        if (availableAmount == 0) {
+            return; // No amount available
+        }
+        
+        // Execute the order with the available amount
+        executeOrder(key, bestTick, executeDirection, availableAmount);
     }
 
 }
