@@ -170,7 +170,7 @@ contract SwapbookV2Test is Test, Deployers, ERC1155Holder {
         assertEq(tokenBalance, 0);
     }
 
-    function test_swapWithHook() public {
+    function test_betterPriceGoesThroughHook() public {
         address user1 = address(0x1);
         address user2 = address(0x2);
         
@@ -248,6 +248,82 @@ contract SwapbookV2Test is Test, Deployers, ERC1155Holder {
         console.log("Token1 Before:", user2Token1Before);
         console.log("Token1 After:", user2Token1After);
         console.log("Token1 Difference:", int256(user2Token1After) - int256(user2Token1Before));
+    }
+
+    function test_worsePriceGoesThroughPool() public {
+        address user1 = address(0x1);
+        address user2 = address(0x2);
+        
+        // Setup users
+        _setupUsers(user1, user2);
+        
+        // Record balances BEFORE placing the order
+        uint256 user1Token0Before = token0.balanceOf(user1);
+        uint256 user1Token1Before = token1.balanceOf(user1);
+        uint256 user2Token0Before = token0.balanceOf(user2);
+        uint256 user2Token1Before = token1.balanceOf(user2);
+        
+        // User1 places a limit order with a WORSE price (lower tick = worse price for selling token0)
+        // We'll use tick -60 instead of tick 60, which gives a much worse price
+        vm.startPrank(user1);
+        int24 worseTick = -60; // Much worse price than current pool price
+        int24 tickLower = hook.placeOrder(key, worseTick, true, 5e18); // Sell token0 for token1
+        assertEq(tickLower, -60);
+        uint256 orderId = hook.getOrderId(key, tickLower, true);
+        uint256 tokenBalance = hook.balanceOf(user1, orderId);
+        assertEq(tokenBalance, 5e18);
+        vm.stopPrank();
+        
+        // User2 performs swap - this should go through the pool since the limit order price is worse
+        vm.startPrank(user2);
+        swapRouter.swap(
+            key,
+            SwapParams({
+                zeroForOne: false, // Swap token1 for token0
+                amountSpecified: -int256(1e18), // Exact input
+                sqrtPriceLimitX96: TickMath.MAX_SQRT_PRICE - 1
+            }),
+            PoolSwapTest.TestSettings({
+                takeClaims: false,
+                settleUsingBurn: false
+            }),
+            ZERO_BYTES
+        );
+        vm.stopPrank();
+        
+        // Check that the limit order was NOT filled (worse price)
+        uint256 claimableOutput = hook.claimableOutputTokens(orderId);
+        assertEq(claimableOutput, 0, "Order should NOT have been filled with worse price");
+        
+        // Check final balances
+        uint256 user1Token0After = token0.balanceOf(user1);
+        uint256 user1Token1After = token1.balanceOf(user1);
+        uint256 user2Token0After = token0.balanceOf(user2);
+        uint256 user2Token1After = token1.balanceOf(user2);
+        
+        console.log("=== USER1 (Limit Order with WORSE Price) ===");
+        console.log("Token0 Before:", user1Token0Before);
+        console.log("Token0 After:", user1Token0After);
+        console.log("Token0 Difference:", int256(user1Token0After) - int256(user1Token0Before));
+        console.log("Token1 Before:", user1Token1Before);
+        console.log("Token1 After:", user1Token1After);
+        console.log("Token1 Difference:", int256(user1Token1After) - int256(user1Token1Before));
+        
+        console.log("=== USER2 (Swap went through POOL) ===");
+        console.log("Token0 Before:", user2Token0Before);
+        console.log("Token0 After:", user2Token0After);
+        console.log("Token0 Difference:", int256(user2Token0After) - int256(user2Token0Before));
+        console.log("Token1 Before:", user2Token1Before);
+        console.log("Token1 After:", user2Token1After);
+        console.log("Token1 Difference:", int256(user2Token1After) - int256(user2Token1Before));
+        
+        // User1 should have lost token0 from placing the order, but gained nothing from execution
+        assertTrue(user1Token0After < user1Token0Before, "User1 should have lost token0 from placing order");
+        assertEq(user1Token1After, user1Token1Before, "User1 should not have gained token1 (order not filled)");
+        
+        // User2 should have gained token0 and lost token1 (normal pool swap)
+        assertTrue(user2Token0After > user2Token0Before, "User2 should have gained token0 from pool swap");
+        assertTrue(user2Token1After < user2Token1Before, "User2 should have lost token1 from pool swap");
     }
 
     function _setupUsers(address user1, address user2) internal {
