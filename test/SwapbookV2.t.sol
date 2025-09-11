@@ -21,6 +21,7 @@ import {PoolKey} from "v4-core/types/PoolKey.sol";
  
 import {Hooks} from "v4-core/libraries/Hooks.sol";
 import {TickMath} from "v4-core/libraries/TickMath.sol";
+import {IHooks} from "v4-core/interfaces/IPoolManager.sol";
  
 import {SwapbookV2} from "../src/SwapbookV2.sol";
  
@@ -169,7 +170,7 @@ contract SwapbookV2Test is Test, Deployers, ERC1155Holder {
         assertEq(tokenBalance, 0);
     }
 
-    function test_beforeSwapOrderMatching() public {
+    function test_swapWithHook() public {
         address user1 = address(0x1);
         address user2 = address(0x2);
         
@@ -200,6 +201,55 @@ contract SwapbookV2Test is Test, Deployers, ERC1155Holder {
         _debugAndVerify(user1, user2, user1Token0Before, user1Token1Before, user2Token0Before, user2Token1Before);
     }
     
+    function test_swapWithoutHook() public {
+        address user2 = address(0x2);
+        
+        // Setup user2
+        vm.startPrank(address(manager));
+        MockERC20(Currency.unwrap(token0)).mint(user2, 10e18);
+        MockERC20(Currency.unwrap(token1)).mint(user2, 10e18);
+        vm.stopPrank();
+        
+        vm.startPrank(user2);
+        MockERC20(Currency.unwrap(token0)).approve(address(swapRouter), type(uint256).max);
+        MockERC20(Currency.unwrap(token1)).approve(address(swapRouter), type(uint256).max);
+        vm.stopPrank();
+        
+        // Record balances before swap
+        uint256 user2Token0Before = token0.balanceOf(user2);
+        uint256 user2Token1Before = token1.balanceOf(user2);
+        
+        // User2 performs swap using the SAME pool but WITHOUT any limit orders
+        // This simulates what would happen if there were no limit orders in the book
+        vm.startPrank(user2);
+        swapRouter.swap(
+            key, // Same pool as the hook test
+            SwapParams({
+                zeroForOne: false, // Swap token1 for token0
+                amountSpecified: -int256(1e18), // Exact input
+                sqrtPriceLimitX96: TickMath.MAX_SQRT_PRICE - 1
+            }),
+            PoolSwapTest.TestSettings({
+                takeClaims: false,
+                settleUsingBurn: false
+            }),
+            ZERO_BYTES
+        );
+        vm.stopPrank();
+        
+        // Check final balances
+        uint256 user2Token0After = token0.balanceOf(user2);
+        uint256 user2Token1After = token1.balanceOf(user2);
+        
+        console.log("=== USER2 WITHOUT Swapbook Limit Orders (Pool Only) ===");
+        console.log("Token0 Before:", user2Token0Before);
+        console.log("Token0 After:", user2Token0After);
+        console.log("Token0 Difference:", int256(user2Token0After) - int256(user2Token0Before));
+        console.log("Token1 Before:", user2Token1Before);
+        console.log("Token1 After:", user2Token1After);
+        console.log("Token1 Difference:", int256(user2Token1After) - int256(user2Token1Before));
+    }
+
     function _setupUsers(address user1, address user2) internal {
         vm.startPrank(address(manager));
         MockERC20(Currency.unwrap(token0)).mint(user1, 10e18);
@@ -247,7 +297,7 @@ contract SwapbookV2Test is Test, Deployers, ERC1155Holder {
         );
         vm.stopPrank();
     }
-    
+
     function _debugAndVerify(address user1, address user2, uint256 user1Token0Before, uint256 user1Token1Before, uint256 user2Token0Before, uint256 user2Token1Before) internal {
         console.log("=== USER1 (Limit Order Seller) ===");
         console.log("Token0 Before:", user1Token0Before);
