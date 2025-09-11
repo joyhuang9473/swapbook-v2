@@ -7,6 +7,10 @@ import "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
 import "./interface/IAvsLogic.sol";
 import "./interface/IAttestationCenter.sol";
+import "./SwapbookV2.sol";
+import "v4-core/types/PoolKey.sol";
+import "v4-core/types/Currency.sol";
+import "v4-core/interfaces/IPoolManager.sol";
 
 /**
  * @title OrderbookAVS
@@ -57,6 +61,7 @@ contract OrderbookAVS is Ownable, IAvsLogic {
     // State variables
     mapping(address => mapping(address => uint256)) public escrowedFunds; // user => token => amount
     mapping(address => bool) public authorizedOperators; // contracts that can transfer funds
+    SwapbookV2 public swapbookV2; // Reference to SwapbookV2 contract
 
     // Modifiers
     modifier onlyAuthorized() {
@@ -151,6 +156,15 @@ contract OrderbookAVS is Ownable, IAvsLogic {
     }
 
     /**
+     * @dev Set the SwapbookV2 contract address
+     * @param _swapbookV2 The SwapbookV2 contract address
+     */
+    function setSwapbookV2(address _swapbookV2) external onlyOwner {
+        require(_swapbookV2 != address(0), "Invalid SwapbookV2 address");
+        swapbookV2 = SwapbookV2(_swapbookV2);
+    }
+
+    /**
      * @dev Process tasks submitted to the AVS
      * @param _taskInfo The task information from the attestation center
      * @param _isApproved Whether the task is approved by attesters
@@ -168,87 +182,127 @@ contract OrderbookAVS is Ownable, IAvsLogic {
         require(_isApproved, "Task not approved by attesters");
         
         // Decode task data to get task type and parameters
-        (TaskType taskType, bytes memory taskData) = abi.decode(_taskInfo.taskData, (TaskType, bytes));
+        (TaskType taskType, bytes memory taskData) = abi.decode(_taskInfo.data, (TaskType, bytes));
         
-        bool success = false;
-        
+        bool success = _processTask(_taskInfo.taskDefinitionId, taskType, taskData);
+        require(success, "Task processing failed");
+    }
+
+    function _processTask(uint256 taskId, TaskType taskType, bytes memory taskData) internal returns (bool) {
         if (taskType == TaskType.NoOp) {
-            // Task 1: No-op - Order does not cross spread and is not best price
-            // No action needed, just log the task
-            success = true;
-            emit TaskProcessed(_taskInfo.taskId, taskType, success);
-            
+            return _processNoOp(taskId);
         } else if (taskType == TaskType.UpdateBestPrice) {
-            // Task 2: Update best price - Order does not cross spread but is best price OR best price order cancelled
-            (address token0, address token1, int24 newBestTick, bool zeroForOne) = 
-                abi.decode(taskData, (address, address, int24, bool));
-            
-            // Update best price logic would go here
-            // For now, just emit the event
-            emit BestPriceUpdated(token0, token1, newBestTick, zeroForOne);
-            success = true;
-            emit TaskProcessed(_taskInfo.taskId, taskType, success);
-            
+            return _processUpdateBestPrice(taskId, taskData);
         } else if (taskType == TaskType.PartialFill) {
-            // Task 3: Partial fill - Order crosses spread and partially fills best price
-            (OrderInfo memory order, uint256 fillAmount0, uint256 fillAmount1) = 
-                abi.decode(taskData, (OrderInfo, uint256, uint256));
-            
-            // Transfer partial amounts between users
-            if (order.zeroForOne) {
-                // Selling token0 for token1
-                _transferFunds(order.user, _taskInfo.taskSubmitter, order.token0, fillAmount0);
-                _transferFunds(_taskInfo.taskSubmitter, order.user, order.token1, fillAmount1);
-            } else {
-                // Selling token1 for token0
-                _transferFunds(order.user, _taskInfo.taskSubmitter, order.token1, fillAmount1);
-                _transferFunds(_taskInfo.taskSubmitter, order.user, order.token0, fillAmount0);
-            }
-            
-            emit OrderExecuted(order.user, order.orderId, fillAmount0, fillAmount1);
-            success = true;
-            emit TaskProcessed(_taskInfo.taskId, taskType, success);
-            
+            return _processPartialFill(taskId, taskData);
         } else if (taskType == TaskType.CompleteFill) {
-            // Task 4: Complete fill - Order crosses spread and completely fills best price, also update best price
-            (OrderInfo memory order, OrderInfo memory nextOrder, uint256 fillAmount0, uint256 fillAmount1) = 
-                abi.decode(taskData, (OrderInfo, OrderInfo, uint256, uint256));
-            
-            // Transfer complete amounts between users
-            if (order.zeroForOne) {
-                // Selling token0 for token1
-                _transferFunds(order.user, _taskInfo.taskSubmitter, order.token0, fillAmount0);
-                _transferFunds(_taskInfo.taskSubmitter, order.user, order.token1, fillAmount1);
-            } else {
-                // Selling token1 for token0
-                _transferFunds(order.user, _taskInfo.taskSubmitter, order.token1, fillAmount1);
-                _transferFunds(_taskInfo.taskSubmitter, order.user, order.token0, fillAmount0);
-            }
-            
-            // Update best price to next order
-            if (nextOrder.user != address(0)) {
-                emit BestPriceUpdated(nextOrder.token0, nextOrder.token1, nextOrder.tick, nextOrder.zeroForOne);
-            }
-            
-            emit OrderExecuted(order.user, order.orderId, fillAmount0, fillAmount1);
-            success = true;
-            emit TaskProcessed(_taskInfo.taskId, taskType, success);
-            
+            return _processCompleteFill(taskId, taskData);
         } else if (taskType == TaskType.ProcessWithdrawal) {
-            // Task 5: Process withdrawal - User requested withdrawal, send money back
-            WithdrawalInfo memory withdrawal = abi.decode(taskData, (WithdrawalInfo));
-            
-            // Process the withdrawal
-            require(escrowedFunds[withdrawal.user][withdrawal.token] >= withdrawal.amount, "Insufficient escrowed funds");
-            escrowedFunds[withdrawal.user][withdrawal.token] -= withdrawal.amount;
-            IERC20(withdrawal.token).safeTransfer(withdrawal.user, withdrawal.amount);
-            
-            emit WithdrawalProcessed(withdrawal.user, withdrawal.token, withdrawal.amount);
-            success = true;
-            emit TaskProcessed(_taskInfo.taskId, taskType, success);
+            return _processWithdrawal(taskId, taskData);
+        }
+        return false;
+    }
+
+    function _processNoOp(uint256 taskId) internal returns (bool) {
+        emit TaskProcessed(taskId, TaskType.NoOp, true);
+        return true;
+    }
+
+    function _processUpdateBestPrice(uint256 taskId, bytes memory taskData) internal returns (bool) {
+        (address token0, address token1, int24 newBestTick, bool zeroForOne, uint256 amount) = 
+            abi.decode(taskData, (address, address, int24, bool, uint256));
+        
+        PoolKey memory key = PoolKey({
+            currency0: Currency.wrap(token0),
+            currency1: Currency.wrap(token1),
+            fee: 3000,
+            tickSpacing: 60,
+            hooks: IHooks(address(swapbookV2))
+        });
+        
+        int24 placedTick = swapbookV2.placeOrder(key, newBestTick, zeroForOne, amount);
+        emit BestPriceUpdated(token0, token1, placedTick, zeroForOne);
+        emit TaskProcessed(taskId, TaskType.UpdateBestPrice, true);
+        return true;
+    }
+
+    function _processPartialFill(uint256 taskId, bytes memory taskData) internal returns (bool) {
+        (OrderInfo memory order, uint256 fillAmount0, uint256 fillAmount1) = 
+            abi.decode(taskData, (OrderInfo, uint256, uint256));
+        
+        PoolKey memory key = PoolKey({
+            currency0: Currency.wrap(order.token0),
+            currency1: Currency.wrap(order.token1),
+            fee: 3000,
+            tickSpacing: 60,
+            hooks: IHooks(address(swapbookV2))
+        });
+        
+        // swapbookV2.executeOrderPublic(key, order.tick, order.zeroForOne, fillAmount0);
+        
+        if (order.zeroForOne) {
+            _transferFunds(order.user, address(this), order.token0, fillAmount0);
+            _transferFunds(address(this), order.user, order.token1, fillAmount1);
+        } else {
+            _transferFunds(order.user, address(this), order.token1, fillAmount1);
+            _transferFunds(address(this), order.user, order.token0, fillAmount0);
         }
         
-        require(success, "Task processing failed");
+        emit OrderExecuted(order.user, order.orderId, fillAmount0, fillAmount1);
+        emit TaskProcessed(taskId, TaskType.PartialFill, true);
+        return true;
+    }
+
+    function _processCompleteFill(uint256 taskId, bytes memory taskData) internal returns (bool) {
+        (OrderInfo memory order, OrderInfo memory nextOrder, uint256 fillAmount0, uint256 fillAmount1) = 
+            abi.decode(taskData, (OrderInfo, OrderInfo, uint256, uint256));
+        
+        PoolKey memory key = PoolKey({
+            currency0: Currency.wrap(order.token0),
+            currency1: Currency.wrap(order.token1),
+            fee: 3000,
+            tickSpacing: 60,
+            hooks: IHooks(address(swapbookV2))
+        });
+        
+        // swapbookV2.executeOrderPublic(key, order.tick, order.zeroForOne, fillAmount0);
+        
+        if (order.zeroForOne) {
+            _transferFunds(order.user, address(this), order.token0, fillAmount0);
+            _transferFunds(address(this), order.user, order.token1, fillAmount1);
+        } else {
+            _transferFunds(order.user, address(this), order.token1, fillAmount1);
+            _transferFunds(address(this), order.user, order.token0, fillAmount0);
+        }
+        
+        if (nextOrder.user != address(0)) {
+            PoolKey memory nextKey = PoolKey({
+                currency0: Currency.wrap(nextOrder.token0),
+                currency1: Currency.wrap(nextOrder.token1),
+                fee: 3000,
+                tickSpacing: 60,
+                hooks: IHooks(address(swapbookV2))
+            });
+            
+            int24 nextPlacedTick = swapbookV2.placeOrder(nextKey, nextOrder.tick, nextOrder.zeroForOne, nextOrder.amount0);
+            emit BestPriceUpdated(nextOrder.token0, nextOrder.token1, nextPlacedTick, nextOrder.zeroForOne);
+        }
+        
+        emit OrderExecuted(order.user, order.orderId, fillAmount0, fillAmount1);
+        emit TaskProcessed(taskId, TaskType.CompleteFill, true);
+        return true;
+    }
+
+    function _processWithdrawal(uint256 taskId, bytes memory taskData) internal returns (bool) {
+        WithdrawalInfo memory withdrawal = abi.decode(taskData, (WithdrawalInfo));
+        
+        require(escrowedFunds[withdrawal.user][withdrawal.token] >= withdrawal.amount, "Insufficient escrowed funds");
+        escrowedFunds[withdrawal.user][withdrawal.token] -= withdrawal.amount;
+        IERC20(withdrawal.token).safeTransfer(withdrawal.user, withdrawal.amount);
+        
+        emit WithdrawalProcessed(withdrawal.user, withdrawal.token, withdrawal.amount);
+        emit TaskProcessed(taskId, TaskType.ProcessWithdrawal, true);
+        return true;
     }
 
     /**
