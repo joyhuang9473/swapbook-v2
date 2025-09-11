@@ -326,6 +326,97 @@ contract SwapbookV2Test is Test, Deployers, ERC1155Holder {
         assertTrue(user2Token1After < user2Token1Before, "User2 should have lost token1 from pool swap");
     }
 
+    function test_partialFillWithPoolCompletion() public {
+        address user1 = address(0x1);
+        address user2 = address(0x2);
+        
+        // Setup users
+        _setupUsers(user1, user2);
+        
+        // Record balances BEFORE placing the order
+        uint256 user1Token0Before = token0.balanceOf(user1);
+        uint256 user1Token1Before = token1.balanceOf(user1);
+        uint256 user2Token0Before = token0.balanceOf(user2);
+        uint256 user2Token1Before = token1.balanceOf(user2);
+        
+        // User1 places a limit order with BETTER price but SMALLER amount
+        // Only 0.5e18 token0 available (less than user2's 1e18 token1 swap)
+        vm.startPrank(user1);
+        int24 betterTick = 60; // Better price than current pool price
+        int24 tickLower = hook.placeOrder(key, betterTick, true, 0.5e18); // Sell only 0.5 token0 for token1
+        assertEq(tickLower, 60);
+        uint256 orderId = hook.getOrderId(key, tickLower, true);
+        uint256 tokenBalance = hook.balanceOf(user1, orderId);
+        assertEq(tokenBalance, 0.5e18);
+        vm.stopPrank();
+        
+        // User2 performs a LARGER swap (1e18 token1) - should be partially filled by limit order
+        vm.startPrank(user2);
+        swapRouter.swap(
+            key,
+            SwapParams({
+                zeroForOne: false, // Swap token1 for token0
+                amountSpecified: -int256(1e18), // Exact input - larger than limit order
+                sqrtPriceLimitX96: TickMath.MAX_SQRT_PRICE - 1
+            }),
+            PoolSwapTest.TestSettings({
+                takeClaims: false,
+                settleUsingBurn: false
+            }),
+            ZERO_BYTES
+        );
+        vm.stopPrank();
+        
+        // Check that the limit order was PARTIALLY filled
+        uint256 claimableOutput = hook.claimableOutputTokens(orderId);
+        assertTrue(claimableOutput > 0, "Order should have been partially filled");
+        assertTrue(claimableOutput < 1e18, "Order should not be fully filled (partial only)");
+        
+        // User1 redeems their partially filled order
+        vm.startPrank(user1);
+        hook.redeem(key, betterTick, true, 0.5e18);
+        vm.stopPrank();
+        
+        // Check final balances
+        uint256 user1Token0After = token0.balanceOf(user1);
+        uint256 user1Token1After = token1.balanceOf(user1);
+        uint256 user2Token0After = token0.balanceOf(user2);
+        uint256 user2Token1After = token1.balanceOf(user2);
+        
+        console.log("=== USER1 (Partial Limit Order Fill) ===");
+        console.log("Token0 Before:", user1Token0Before);
+        console.log("Token0 After:", user1Token0After);
+        console.log("Token0 Difference:", int256(user1Token0After) - int256(user1Token0Before));
+        console.log("Token1 Before:", user1Token1Before);
+        console.log("Token1 After:", user1Token1After);
+        console.log("Token1 Difference:", int256(user1Token1After) - int256(user1Token1Before));
+        
+        console.log("=== USER2 (Partial Fill + Pool Completion) ===");
+        console.log("Token0 Before:", user2Token0Before);
+        console.log("Token0 After:", user2Token0After);
+        console.log("Token0 Difference:", int256(user2Token0After) - int256(user2Token0Before));
+        console.log("Token1 Before:", user2Token1Before);
+        console.log("Token1 After:", user2Token1After);
+        console.log("Token1 Difference:", int256(user2Token1After) - int256(user2Token1Before));
+        
+        // User1 should have lost token0 from placing the order and gained some token1 from partial fill
+        assertTrue(user1Token0After < user1Token0Before, "User1 should have lost token0 from placing order");
+        assertTrue(user1Token1After > user1Token1Before, "User1 should have gained some token1 from partial fill");
+        
+        // User2 should have gained token0 and lost token1 (from both limit order and pool)
+        assertTrue(user2Token0After > user2Token0Before, "User2 should have gained token0 from partial fill + pool");
+        assertTrue(user2Token1After < user2Token1Before, "User2 should have lost token1 from partial fill + pool");
+        
+        // User2 should get more token0 than just pool-only (due to partial limit order fill)
+        // But less than full limit order fill (since it was partial)
+        uint256 poolOnlyToken0 = 921161300970596286; // From previous test
+        uint256 fullLimitOrderToken0 = 1925892024947750006; // From previous test
+        uint256 actualToken0Gained = user2Token0After - user2Token0Before;
+        
+        assertTrue(actualToken0Gained > poolOnlyToken0, "Should get more than pool-only due to partial limit order");
+        assertTrue(actualToken0Gained < fullLimitOrderToken0, "Should get less than full limit order due to partial fill");
+    }
+
     function _setupUsers(address user1, address user2) internal {
         vm.startPrank(address(manager));
         MockERC20(Currency.unwrap(token0)).mint(user1, 10e18);
