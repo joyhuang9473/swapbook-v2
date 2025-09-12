@@ -62,6 +62,11 @@ contract OrderbookAVS is Ownable, IAvsLogic {
     mapping(address => mapping(address => uint256)) public escrowedFunds; // user => token => amount
     mapping(address => bool) public authorizedOperators; // contracts that can transfer funds
     SwapbookV2 public swapbookV2; // Reference to SwapbookV2 contract
+    
+    // Best order tracking
+    mapping(address => mapping(address => address)) public bestOrderUsers; // token0 => token1 => user
+    mapping(address => mapping(address => int24)) public bestOrderTicks; // token0 => token1 => tick
+    mapping(address => mapping(address => bool)) public bestOrderDirections; // token0 => token1 => zeroForOne
 
     // Modifiers
     modifier onlyAuthorized() {
@@ -209,19 +214,15 @@ contract OrderbookAVS is Ownable, IAvsLogic {
     }
 
     function _processUpdateBestPrice(uint256 taskId, bytes memory taskData) internal returns (bool) {
-        (address token0, address token1, int24 newBestTick, bool zeroForOne, uint256 amount) = 
-            abi.decode(taskData, (address, address, int24, bool, uint256));
+        (address token0, address token1, int24 newBestTick, bool zeroForOne, uint256 amount, address user) = 
+            abi.decode(taskData, (address, address, int24, bool, uint256, address));
         
-        PoolKey memory key = PoolKey({
-            currency0: Currency.wrap(token0),
-            currency1: Currency.wrap(token1),
-            fee: 3000,
-            tickSpacing: 60,
-            hooks: IHooks(address(swapbookV2))
-        });
+        // Store the best order information
+        bestOrderUsers[token0][token1] = user;
+        bestOrderTicks[token0][token1] = newBestTick;
+        bestOrderDirections[token0][token1] = zeroForOne;
         
-        int24 placedTick = swapbookV2.placeOrder(key, newBestTick, zeroForOne, amount);
-        emit BestPriceUpdated(token0, token1, placedTick, zeroForOne);
+        emit BestPriceUpdated(token0, token1, newBestTick, zeroForOne);
         emit TaskProcessed(taskId, TaskType.UpdateBestPrice, true);
         return true;
     }
@@ -254,41 +255,42 @@ contract OrderbookAVS is Ownable, IAvsLogic {
     }
 
     function _processCompleteFill(uint256 taskId, bytes memory taskData) internal returns (bool) {
-        (OrderInfo memory order, OrderInfo memory nextOrder, uint256 fillAmount0, uint256 fillAmount1) = 
-            abi.decode(taskData, (OrderInfo, OrderInfo, uint256, uint256));
+        (OrderInfo memory incomingOrder, uint256 fillAmount0, uint256 fillAmount1, OrderInfo memory newBestOrder) = 
+            abi.decode(taskData, (OrderInfo, uint256, uint256, OrderInfo));
         
-        PoolKey memory key = PoolKey({
-            currency0: Currency.wrap(order.token0),
-            currency1: Currency.wrap(order.token1),
-            fee: 3000,
-            tickSpacing: 60,
-            hooks: IHooks(address(swapbookV2))
-        });
+        // Get the best order user from storage
+        address bestOrderUser = bestOrderUsers[incomingOrder.token0][incomingOrder.token1];
+        require(bestOrderUser != address(0), "No best order found");
         
-        // swapbookV2.executeOrderPublic(key, order.tick, order.zeroForOne, fillAmount0);
-        
-        if (order.zeroForOne) {
-            _transferFunds(order.user, address(this), order.token0, fillAmount0);
-            _transferFunds(address(this), order.user, order.token1, fillAmount1);
+        // Direct peer-to-peer token exchange between incoming order and best order
+        if (incomingOrder.zeroForOne) {
+            // Incoming order is selling token0 for token1, best order is selling token1 for token0
+            // Transfer token0 from incoming order user to best order user
+            _transferFunds(incomingOrder.user, bestOrderUser, incomingOrder.token0, fillAmount0);
+            // Transfer token1 from best order user to incoming order user
+            _transferFunds(bestOrderUser, incomingOrder.user, incomingOrder.token1, fillAmount1);
         } else {
-            _transferFunds(order.user, address(this), order.token1, fillAmount1);
-            _transferFunds(address(this), order.user, order.token0, fillAmount0);
+            // Incoming order is selling token1 for token0, best order is selling token0 for token1
+            // Transfer token1 from incoming order user to best order user
+            _transferFunds(incomingOrder.user, bestOrderUser, incomingOrder.token1, fillAmount1);
+            // Transfer token0 from best order user to incoming order user
+            _transferFunds(bestOrderUser, incomingOrder.user, incomingOrder.token0, fillAmount0);
         }
         
-        if (nextOrder.user != address(0)) {
-            PoolKey memory nextKey = PoolKey({
-                currency0: Currency.wrap(nextOrder.token0),
-                currency1: Currency.wrap(nextOrder.token1),
-                fee: 3000,
-                tickSpacing: 60,
-                hooks: IHooks(address(swapbookV2))
-            });
-            
-            int24 nextPlacedTick = swapbookV2.placeOrder(nextKey, nextOrder.tick, nextOrder.zeroForOne, nextOrder.amount0);
-            emit BestPriceUpdated(nextOrder.token0, nextOrder.token1, nextPlacedTick, nextOrder.zeroForOne);
+        // Update best order if newBestOrder is provided and valid
+        if (newBestOrder.user != address(0)) {
+            bestOrderUsers[newBestOrder.token0][newBestOrder.token1] = newBestOrder.user;
+            bestOrderTicks[newBestOrder.token0][newBestOrder.token1] = newBestOrder.tick;
+            bestOrderDirections[newBestOrder.token0][newBestOrder.token1] = newBestOrder.zeroForOne;
+            emit BestPriceUpdated(newBestOrder.token0, newBestOrder.token1, newBestOrder.tick, newBestOrder.zeroForOne);
+        } else {
+            // Clear best order if no new best order provided
+            bestOrderUsers[incomingOrder.token0][incomingOrder.token1] = address(0);
+            bestOrderTicks[incomingOrder.token0][incomingOrder.token1] = 0;
+            bestOrderDirections[incomingOrder.token0][incomingOrder.token1] = false;
         }
         
-        emit OrderExecuted(order.user, order.orderId, fillAmount0, fillAmount1);
+        emit OrderExecuted(incomingOrder.user, incomingOrder.orderId, fillAmount0, fillAmount1);
         emit TaskProcessed(taskId, TaskType.CompleteFill, true);
         return true;
     }
