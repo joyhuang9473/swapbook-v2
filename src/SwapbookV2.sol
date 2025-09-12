@@ -97,7 +97,7 @@ contract SwapbookV2 is BaseHook, ERC1155 {
         bytes calldata
     ) internal override returns (bytes4, BeforeSwapDelta, uint24) {
         // Don't process if the swap was initiated by this hook to avoid recursion
-        if (sender == address(this)) return (this.beforeSwap.selector, BeforeSwapDeltaLibrary.ZERO_DELTA, 0);
+        if (sender == address(this)) return (BaseHook.beforeSwap.selector, BeforeSwapDeltaLibrary.ZERO_DELTA, 0);
 
         // Check if we have a better price in our order book
         bool hasBetterPrice = checkForBetterPrice(key, params);
@@ -106,11 +106,11 @@ contract SwapbookV2 is BaseHook, ERC1155 {
             // Execute the swap through our order book instead of the pool
             executeSwapThroughOrderBook(key, params);
             // Return a non-zero delta to indicate we've handled the swap
-            return (this.beforeSwap.selector, BeforeSwapDeltaLibrary.ZERO_DELTA, 0);
+            return (BaseHook.beforeSwap.selector, BeforeSwapDeltaLibrary.ZERO_DELTA, 0);
         }
 
         // Let the swap proceed through the pool normally
-        return (this.beforeSwap.selector, BeforeSwapDeltaLibrary.ZERO_DELTA, 0);
+        return (BaseHook.beforeSwap.selector, BeforeSwapDeltaLibrary.ZERO_DELTA, 0);
     }
 
     function getLowerUsableTick(

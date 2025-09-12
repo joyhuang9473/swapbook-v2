@@ -5,6 +5,7 @@ pragma solidity ^0.8.0;
 import "@openzeppelin/contracts/access/Ownable.sol";
 import "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
+import "@openzeppelin/contracts/token/ERC1155/IERC1155Receiver.sol";
 import "./interface/IAvsLogic.sol";
 import "./interface/IAttestationCenter.sol";
 import "./SwapbookV2.sol";
@@ -17,7 +18,7 @@ import "v4-core/interfaces/IPoolManager.sol";
  * @dev Manages escrowed funds for limit orders in the SwapbookV2 system
  * @notice Users can deposit and withdraw funds that are held in escrow for limit orders
  */
-contract OrderbookAVS is Ownable, IAvsLogic {
+contract OrderbookAVS is Ownable, IAvsLogic, IERC1155Receiver {
     using SafeERC20 for IERC20;
 
     constructor() Ownable(msg.sender) {}
@@ -217,10 +218,25 @@ contract OrderbookAVS is Ownable, IAvsLogic {
         (address token0, address token1, int24 newBestTick, bool zeroForOne, uint256 amount, address user) = 
             abi.decode(taskData, (address, address, int24, bool, uint256, address));
         
-        // Store the best order information
+        // Store the best order information in OrderbookAVS
         bestOrderUsers[token0][token1] = user;
         bestOrderTicks[token0][token1] = newBestTick;
         bestOrderDirections[token0][token1] = zeroForOne;
+        
+        // Also place the order in SwapbookV2 to record bestTicks for re-routing
+        if (address(swapbookV2) != address(0)) {
+            // Create a PoolKey for the token pair
+            PoolKey memory key = PoolKey({
+                currency0: Currency.wrap(token0),
+                currency1: Currency.wrap(token1),
+                fee: 3000, // Default fee tier
+                tickSpacing: 60,
+                hooks: IHooks(address(swapbookV2))
+            });
+            
+            // Place order in SwapbookV2
+            swapbookV2.placeOrder(key, newBestTick, zeroForOne, amount);
+        }
         
         emit BestPriceUpdated(token0, token1, newBestTick, zeroForOne);
         emit TaskProcessed(taskId, TaskType.UpdateBestPrice, true);
@@ -321,4 +337,28 @@ contract OrderbookAVS is Ownable, IAvsLogic {
         // Could include validation, pre-processing, etc.
     }
 
+    // IERC1155Receiver implementation
+    function onERC1155Received(
+        address,
+        address,
+        uint256,
+        uint256,
+        bytes calldata
+    ) external pure returns (bytes4) {
+        return IERC1155Receiver.onERC1155Received.selector;
+    }
+
+    function onERC1155BatchReceived(
+        address,
+        address,
+        uint256[] calldata,
+        uint256[] calldata,
+        bytes calldata
+    ) external pure returns (bytes4) {
+        return IERC1155Receiver.onERC1155BatchReceived.selector;
+    }
+
+    function supportsInterface(bytes4 interfaceId) external pure returns (bool) {
+        return interfaceId == type(IERC1155Receiver).interfaceId;
+    }
 }
