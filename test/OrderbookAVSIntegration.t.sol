@@ -131,12 +131,7 @@ contract OrderbookAVSIntegrationTest is Test, Deployers, ERC1155Holder {
         orderbookAVS.depositFunds(Currency.unwrap(token0), 500e18);
         orderbookAVS.depositFunds(Currency.unwrap(token1), 500e18);
         vm.stopPrank();
-        
-        // TODO: should be removed
-        // Fund OrderbookAVS with tokens so it can place orders in SwapbookV2
-        MockERC20(Currency.unwrap(token0)).mint(address(orderbookAVS), 1000e18);
-        MockERC20(Currency.unwrap(token1)).mint(address(orderbookAVS), 1000e18);
-        
+
         // Approve SwapbookV2 to spend OrderbookAVS tokens
         vm.prank(address(orderbookAVS));
         MockERC20(Currency.unwrap(token0)).approve(address(swapbookV2), type(uint256).max);
