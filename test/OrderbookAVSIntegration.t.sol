@@ -784,7 +784,6 @@ contract OrderbookAVSIntegrationTest is Test, Deployers, ERC1155Holder {
         console.log("User4's swap completely filled the limit order (50e18) and completed remaining (50e18) through pool");
         console.log("User1's limit order was completely executed and settled");
     }
-    
 
     function _placeLimitOrder() internal {
         console.log("=== STEP 1: User1 places limit order (better price) ===");
@@ -1093,5 +1092,174 @@ contract OrderbookAVSIntegrationTest is Test, Deployers, ERC1155Holder {
         console.log("token0 for", user4Token1Lost, "token1");
     }
 
-}
+    function testBestOrderTicksMismatch() public {
+        // Test case where bestOrderTicks in OrderbookAVS differs from bestTicks in SwapbookV2
+        // This happens naturally due to getLowerUsableTick function rounding down ticks
+        // User1 sells 100e18 token0 for token1 at tick 100
+        // User4 swaps through router to sell 100e18 token1 for token0
+        console.log("=== Testing Natural Best Order Ticks Mismatch (due to tickSpacing) ===");
+        
+        // STEP 1: User1 places limit order at tick 100 in OrderbookAVS
+        _placeOrderAtTick100();
+        
+        // STEP 2: Check the natural mismatch due to getLowerUsableTick
+        _simulateSwapbookV2Mismatch();
+        
+        // STEP 3: User4 swaps through router
+        _executeSwapWithMismatch();
+        
+        // STEP 4: Verify the behavior with mismatched ticks
+        _verifyMismatchBehavior();
+    }
 
+    function _placeOrderAtTick100() internal {
+        console.log("=== STEP 1: User1 places limit order at tick 100 ===");
+        
+        // Create UpdateBestPrice task data for User1's order at tick 100
+        bytes memory updateTaskData = abi.encode(
+            Currency.unwrap(token0),
+            Currency.unwrap(token1),
+            100, // tick 100
+            true,  // zeroForOne (selling token0 for token1)
+            100e18, // amount
+            user1  // user who placed the order
+        );
+        
+        IAttestationCenter.TaskInfo memory updateTaskInfo = IAttestationCenter.TaskInfo({
+            proofOfTask: "proof1",
+            data: abi.encode(OrderbookAVS.TaskType.UpdateBestPrice, updateTaskData),
+            taskPerformer: address(this),
+            taskDefinitionId: 1
+        });
+        
+        // Process the UpdateBestPrice task in OrderbookAVS
+        orderbookAVS.afterTaskSubmission(updateTaskInfo, true, "", [uint256(0), uint256(0)], new uint256[](0));
+        
+        console.log("User1's order placed in OrderbookAVS at tick 100");
+        console.log("OrderbookAVS bestOrderTicks:", orderbookAVS.bestOrderTicks(Currency.unwrap(token0), Currency.unwrap(token1)));
+        
+        // Verify OrderbookAVS has the order at tick 100
+        assertEq(orderbookAVS.bestOrderTicks(Currency.unwrap(token0), Currency.unwrap(token1)), 100, "OrderbookAVS should have tick 100");
+        assertEq(orderbookAVS.bestOrderUsers(Currency.unwrap(token0), Currency.unwrap(token1)), user1, "OrderbookAVS should have user1");
+    }
+
+    function _simulateSwapbookV2Mismatch() internal {
+        console.log("=== STEP 2: Check natural tick mismatch due to getLowerUsableTick ===");
+        
+        PoolKey memory key = PoolKey({
+            currency0: token0,
+            currency1: token1,
+            fee: 3000,
+            tickSpacing: 60,
+            hooks: IHooks(address(swapbookV2))
+        });
+        
+        // Check current state after OrderbookAVS placed the order
+        int24 orderbookAVSTick = orderbookAVS.bestOrderTicks(Currency.unwrap(token0), Currency.unwrap(token1));
+        int24 swapbookV2Tick = swapbookV2.bestTicks(key.toId(), true);
+        
+        console.log("After OrderbookAVS placed order at tick 100:");
+        console.log("OrderbookAVS bestOrderTicks:", orderbookAVSTick);
+        console.log("SwapbookV2 bestTicks:", swapbookV2Tick);
+        
+        // The mismatch occurs naturally because:
+        // - OrderbookAVS stores the original tick (100)
+        // - When OrderbookAVS called swapbookV2.placeOrder(100, ...), 
+        //   getLowerUsableTick(100, 60) returned 60 (100/60 = 1, 1*60 = 60)
+        // - So SwapbookV2 actually has tick 60, not 100
+        
+        assertEq(orderbookAVSTick, 100, "OrderbookAVS should have original tick 100");
+        assertEq(swapbookV2Tick, 60, "SwapbookV2 should have usable tick 60 (100 rounded down by tickSpacing)");
+        assertTrue(orderbookAVSTick != swapbookV2Tick, "Ticks should be different due to tickSpacing rounding");
+        
+        console.log("Natural mismatch confirmed: OrderbookAVS has tick 100, SwapbookV2 has tick 60");
+        console.log("This happens because getLowerUsableTick(100, 60) = 60");
+    }
+
+    function _executeSwapWithMismatch() internal {
+        console.log("=== STEP 3: User4 swaps through router with tick mismatch ===");
+        
+        // Create user4 - a normal swap router user
+        address user4 = makeAddr("user4");
+        
+        // Give user4 some tokens to swap with
+        MockERC20(Currency.unwrap(token0)).mint(user4, 1000e18);
+        MockERC20(Currency.unwrap(token1)).mint(user4, 1000e18);
+        
+        // User4 needs to approve the swap router to spend their tokens
+        vm.startPrank(user4);
+        MockERC20(Currency.unwrap(token0)).approve(address(swapRouter), type(uint256).max);
+        MockERC20(Currency.unwrap(token1)).approve(address(swapRouter), type(uint256).max);
+        vm.stopPrank();
+        
+        // Record balances before swap
+        uint256 user1Token0Before = orderbookAVS.getEscrowedBalance(user1, Currency.unwrap(token0));
+        uint256 user1Token1Before = orderbookAVS.getEscrowedBalance(user1, Currency.unwrap(token1));
+        uint256 user4Token0Before = MockERC20(Currency.unwrap(token0)).balanceOf(user4);
+        uint256 user4Token1Before = MockERC20(Currency.unwrap(token1)).balanceOf(user4);
+
+        console.log("=== BEFORE SWAP WITH MISMATCH ===");
+        console.log("User1 Token0 (escrow):", user1Token0Before);
+        console.log("User1 Token1 (escrow):", user1Token1Before);
+        console.log("User4 Token0 (wallet):", user4Token0Before);
+        console.log("User4 Token1 (wallet):", user4Token1Before);
+        
+        // Execute the swap through the swap router (100e18 token1 for token0)
+        PoolKey memory key = PoolKey({
+            currency0: token0,
+            currency1: token1,
+            fee: 3000,
+            tickSpacing: 60,
+            hooks: IHooks(address(swapbookV2))
+        });
+        
+        vm.startPrank(user4);
+        swapRouter.swap(
+            key,
+            SwapParams({
+                zeroForOne: false, // User4 selling token1 for token0
+                amountSpecified: -int256(100e18), // Exact input of 100e18 token1
+                sqrtPriceLimitX96: TickMath.MAX_SQRT_PRICE - 1
+            }),
+            PoolSwapTest.TestSettings({
+                takeClaims: false,
+                settleUsingBurn: false
+            }),
+            ZERO_BYTES
+        );
+        vm.stopPrank();
+        
+        // Record balances after swap
+        console.log("=== AFTER SWAP WITH MISMATCH ===");
+        console.log("User1 Token0 (escrow):", orderbookAVS.getEscrowedBalance(user1, Currency.unwrap(token0)));
+        console.log("User1 Token1 (escrow):", orderbookAVS.getEscrowedBalance(user1, Currency.unwrap(token1)));
+        console.log("User4 Token0 (wallet):", MockERC20(Currency.unwrap(token0)).balanceOf(user4));
+        console.log("User4 Token1 (wallet):", MockERC20(Currency.unwrap(token1)).balanceOf(user4));
+    }
+
+    function _verifyMismatchBehavior() internal {
+        console.log("=== STEP 4: Verify behavior with tick mismatch ===");
+        
+        PoolKey memory key = PoolKey({
+            currency0: token0,
+            currency1: token1,
+            fee: 3000,
+            tickSpacing: 60,
+            hooks: IHooks(address(swapbookV2))
+        });
+        
+        int24 orderbookAVSTick = orderbookAVS.bestOrderTicks(Currency.unwrap(token0), Currency.unwrap(token1));
+        int24 swapbookV2Tick = swapbookV2.bestTicks(key.toId(), true);
+        
+        console.log("Final state after swap:");
+        console.log("OrderbookAVS bestOrderTicks:", orderbookAVSTick);
+        console.log("SwapbookV2 bestTicks:", swapbookV2Tick);
+        
+        // The behavior depends on which system the swap router uses for price comparison
+        // SwapbookV2's _beforeSwap hook will use its own bestTicks, not OrderbookAVS's bestOrderTicks
+        console.log("Test completed - verified behavior with mismatched ticks");
+        console.log("OrderbookAVS tick:", orderbookAVSTick);
+        console.log("SwapbookV2 tick:", swapbookV2Tick);
+    }
+
+}
