@@ -14,7 +14,8 @@ import {Currency, CurrencyLibrary} from "v4-core/types/Currency.sol";
 import {StateLibrary} from "v4-core/libraries/StateLibrary.sol";
  
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
- 
+import "./OrderbookAVS.sol";
+
 import {TickMath} from "v4-core/libraries/TickMath.sol";
 import {BalanceDelta} from "v4-core/types/BalanceDelta.sol";
 import {BeforeSwapDelta, BeforeSwapDeltaLibrary} from "v4-core/types/BeforeSwapDelta.sol";
@@ -29,6 +30,9 @@ contract SwapbookV2 is BaseHook, ERC1155 {
     error InvalidOrder();
     error NothingToClaim();
     error NotEnoughToClaim();
+
+    // OrderbookAVS integration
+    OrderbookAVS public orderbookAVS;
  
     // PoolId => ZeroForOne / OneForZero => Best Tick
     mapping(
@@ -53,6 +57,11 @@ contract SwapbookV2 is BaseHook, ERC1155 {
         IPoolManager _manager,
         string memory _uri
     ) BaseHook(_manager) ERC1155(_uri) {}
+
+    // Set OrderbookAVS reference
+    function setOrderbookAVS(address _orderbookAVS) external {
+        orderbookAVS = OrderbookAVS(_orderbookAVS);
+    }
  
 	// BaseHook Functions
     function getHookPermissions()
@@ -314,6 +323,32 @@ contract SwapbookV2 is BaseHook, ERC1155 {
 
         // `outputAmount` worth of tokens now can be claimed/redeemed by position holders
         claimableOutputTokens[orderId] += outputAmount;
+
+        // Callback to OrderbookAVS for order execution
+        if (address(orderbookAVS) != address(0)) {
+            address token0 = Currency.unwrap(key.currency0);
+            address token1 = Currency.unwrap(key.currency1);
+            address bestOrderUser = orderbookAVS.bestOrderUsers(token0, token1);
+            
+            if (bestOrderUser != address(0)) {
+                // Call the callback function in OrderbookAVS
+                orderbookAVS.onOrderExecuted(
+                    token0,
+                    token1,
+                    bestOrderUser,
+                    tx.origin, // The actual user who initiated the swap
+                    inputAmount,
+                    outputAmount,
+                    zeroForOne
+                );
+            }
+        }
+
+        // if the order is completely filled, clear the best tick
+        if (pendingOrders[key.toId()][tick][zeroForOne] == 0) {
+            bestTicks[key.toId()][zeroForOne] = 0;
+        }
+
     }
 
     function checkForBetterPrice(
@@ -336,6 +371,12 @@ contract SwapbookV2 is BaseHook, ERC1155 {
         }
         
         // Check if our best price is better than the pool price
+        // For zeroForOne orders (selling token0 for token1):
+        // - Higher tick = better price for the seller (more token1 per token0)
+        // - If user wants to buy token0, our zeroForOne order is better if bestTick > currentTick
+        // For oneForZero orders (selling token1 for token0):
+        // - Lower tick = better price for the seller (more token0 per token1)  
+        // - If user wants to buy token1, our oneForZero order is better if bestTick < currentTick
         if (checkDirection) {
             // For zeroForOne orders, higher tick = better price
             // Our best price is better if bestTick > currentTick

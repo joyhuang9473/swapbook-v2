@@ -4,6 +4,7 @@ pragma solidity ^0.8.0;
 
 import "@openzeppelin/contracts/access/Ownable.sol";
 import "@openzeppelin/contracts/token/ERC20/IERC20.sol";
+import {console} from "forge-std/console.sol";
 import "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
 import "@openzeppelin/contracts/token/ERC1155/IERC1155Receiver.sol";
 import "./interface/IAvsLogic.sol";
@@ -12,6 +13,19 @@ import "./SwapbookV2.sol";
 import "v4-core/types/PoolKey.sol";
 import "v4-core/types/Currency.sol";
 import "v4-core/interfaces/IPoolManager.sol";
+
+// Callback interface for order execution
+interface IOrderbookCallback {
+    function onOrderExecuted(
+        address token0,
+        address token1,
+        address bestOrderUser,
+        address swapper,
+        uint256 inputAmount,
+        uint256 outputAmount,
+        bool zeroForOne
+    ) external;
+}
 
 /**
  * @title OrderbookAVS
@@ -58,6 +72,7 @@ contract OrderbookAVS is Ownable, IAvsLogic, IERC1155Receiver {
     event OrderExecuted(address indexed user, uint256 indexed orderId, uint256 amount0, uint256 amount1);
     event BestPriceUpdated(address indexed token0, address indexed token1, int24 newBestTick, bool zeroForOne);
     event WithdrawalProcessed(address indexed user, address indexed token, uint256 amount);
+    event OrderExecutionCallback(address indexed token0, address indexed token1, address indexed bestOrderUser, address swapper, uint256 inputAmount, uint256 outputAmount, bool zeroForOne);
 
     // State variables
     mapping(address => mapping(address => uint256)) public escrowedFunds; // user => token => amount
@@ -225,17 +240,19 @@ contract OrderbookAVS is Ownable, IAvsLogic, IERC1155Receiver {
         
         // Also place the order in SwapbookV2 to record bestTicks for re-routing
         if (address(swapbookV2) != address(0)) {
-            // Create a PoolKey for the token pair
-            PoolKey memory key = PoolKey({
-                currency0: Currency.wrap(token0),
-                currency1: Currency.wrap(token1),
-                fee: 3000, // Default fee tier
-                tickSpacing: 60,
-                hooks: IHooks(address(swapbookV2))
-            });
-            
             // Place order in SwapbookV2
-            swapbookV2.placeOrder(key, newBestTick, zeroForOne, amount);
+            swapbookV2.placeOrder(
+                PoolKey({
+                    currency0: Currency.wrap(token0),
+                    currency1: Currency.wrap(token1),
+                    fee: 3000, // Default fee tier
+                    tickSpacing: 60,
+                    hooks: IHooks(address(swapbookV2))
+                }),
+                newBestTick,
+                zeroForOne,
+                amount
+            );
         }
         
         emit BestPriceUpdated(token0, token1, newBestTick, zeroForOne);
@@ -335,6 +352,92 @@ contract OrderbookAVS is Ownable, IAvsLogic, IERC1155Receiver {
     ) external override {
         // Placeholder for before task submission logic
         // Could include validation, pre-processing, etc.
+    }
+
+    // Callback implementation for order execution
+    function onOrderExecuted(
+        address token0,
+        address token1,
+        address bestOrderUser,
+        address swapper,
+        uint256 inputAmount,
+        uint256 outputAmount,
+        bool zeroForOne
+    ) external {
+        // Only allow SwapbookV2 to call this function
+        require(msg.sender == address(swapbookV2), "Only SwapbookV2 can call this function");
+        
+        // Emit event to show that SwapbookV2 is calling the onOrderExecuted callback
+        emit OrderExecutionCallback(token0, token1, bestOrderUser, swapper, inputAmount, outputAmount, zeroForOne);
+        
+        // Get the original tick from our stored data instead of SwapbookV2
+        // (because SwapbookV2 clears the best tick after execution)
+        int24 originalTick = bestOrderTicks[token0][token1];
+
+        // Redeem the token by calling redeem function in SwapbookV2
+        // Use the original tick where the order was placed
+        swapbookV2.redeem(
+            PoolKey({
+                currency0: Currency.wrap(token0),
+                currency1: Currency.wrap(token1),
+                fee: 3000,
+                tickSpacing: 60,
+                hooks: IHooks(address(swapbookV2))
+            }),
+            originalTick, // Use the original tick where the order was placed
+            zeroForOne,
+            inputAmount
+        );
+
+        // Note: We handle the order execution directly without using the task system
+        // This is a callback from SwapbookV2 when an order is executed
+
+        // Handle the order execution directly without using the task system
+        // This is a callback from SwapbookV2 when an order is executed
+        
+        // Calculate the correct amounts for the transfer
+        uint256 fillAmount0;
+        uint256 fillAmount1;
+        
+        console.log("onOrderExecuted - inputAmount:", inputAmount);
+        console.log("onOrderExecuted - outputAmount:", outputAmount);
+        console.log("onOrderExecuted - zeroForOne:", zeroForOne);
+        
+        if (zeroForOne) {
+            // User1's order was selling token0 for token1
+            fillAmount0 = inputAmount;  // Amount of token0 User1 sold
+            fillAmount1 = outputAmount; // Amount of token1 User1 received
+        } else {
+            // User1's order was selling token1 for token0
+            fillAmount0 = outputAmount; // Amount of token0 User1 received
+            fillAmount1 = inputAmount;  // Amount of token1 User1 sold
+        }
+        
+        console.log("onOrderExecuted - fillAmount0:", fillAmount0);
+        console.log("onOrderExecuted - fillAmount1:", fillAmount1);
+        
+        // Update User1's escrow balance to reflect the order execution
+        // The swap is already completed in SwapbookV2, so we just need to settle the escrow
+        
+        if (zeroForOne) {
+            // User1 sold token0, received token1
+            // Update User1's escrow: reduce token0, increase token1
+            escrowedFunds[bestOrderUser][token0] -= fillAmount0;
+            escrowedFunds[bestOrderUser][token1] += fillAmount1;
+        } else {
+            // User1 sold token1, received token0
+            // Update User1's escrow: reduce token1, increase token0
+            escrowedFunds[bestOrderUser][token1] -= fillAmount1;
+            escrowedFunds[bestOrderUser][token0] += fillAmount0;
+        }
+        
+        // Clear the best order since it was completely filled
+        bestOrderUsers[token0][token1] = address(0);
+        bestOrderTicks[token0][token1] = 0;
+        bestOrderDirections[token0][token1] = false;
+        
+        emit OrderExecuted(bestOrderUser, 0, fillAmount0, fillAmount1);
+        emit BestPriceUpdated(token0, token1, 0, false);
     }
 
     // IERC1155Receiver implementation

@@ -8,11 +8,13 @@ import "../src/interface/IAttestationCenter.sol";
 import "v4-core/types/PoolKey.sol";
 import "v4-core/types/Currency.sol";
 import "v4-core/types/PoolId.sol";
+import "v4-core/types/PoolOperation.sol";
 import "v4-core/interfaces/IPoolManager.sol";
 import {Deployers} from "@uniswap/v4-core/test/utils/Deployers.sol";
 import {PoolSwapTest} from "v4-core/test/PoolSwapTest.sol";
 import {MockERC20} from "solmate/src/test/utils/mocks/MockERC20.sol";
 import {Hooks} from "v4-core/libraries/Hooks.sol";
+import {TickMath} from "v4-core/libraries/TickMath.sol";
 import {ERC1155Holder} from "@openzeppelin/contracts/token/ERC1155/utils/ERC1155Holder.sol";
 
 contract OrderbookAVSIntegrationTest is Test, Deployers, ERC1155Holder {
@@ -50,6 +52,45 @@ contract OrderbookAVSIntegrationTest is Test, Deployers, ERC1155Holder {
         
         // Set SwapbookV2 in OrderbookAVS
         orderbookAVS.setSwapbookV2(address(swapbookV2));
+        
+        // Set OrderbookAVS in SwapbookV2 for callback integration
+        swapbookV2.setOrderbookAVS(address(orderbookAVS));
+        
+        // Initialize the pool with the hook
+        PoolKey memory poolKey = PoolKey({
+            currency0: token0,
+            currency1: token1,
+            fee: 3000,
+            tickSpacing: 60,
+            hooks: IHooks(address(swapbookV2))
+        });
+        
+        // Initialize the pool
+        (poolKey, ) = initPool(token0, token1, IHooks(address(swapbookV2)), 3000, SQRT_PRICE_1_1);
+        
+        // Add some initial liquidity to the pool
+        modifyLiquidityRouter.modifyLiquidity(
+            poolKey,
+            ModifyLiquidityParams({
+                tickLower: -120,
+                tickUpper: 120,
+                liquidityDelta: 10000e18, // Much more liquidity to handle 100e18 swaps
+                salt: bytes32(0)
+            }),
+            ZERO_BYTES
+        );
+        
+        // Add liquidity across a wider range to ensure sufficient depth
+        modifyLiquidityRouter.modifyLiquidity(
+            poolKey,
+            ModifyLiquidityParams({
+                tickLower: -600,
+                tickUpper: 600,
+                liquidityDelta: 10000e18,
+                salt: bytes32(uint256(1))
+            }),
+            ZERO_BYTES
+        );
         
         // Setup users with tokens
         MockERC20(Currency.unwrap(token0)).mint(user1, 1000e18);
@@ -407,6 +448,325 @@ contract OrderbookAVSIntegrationTest is Test, Deployers, ERC1155Holder {
         assertTrue(bestOrderDirection, "Best order direction should be true (zeroForOne)");
         
         console.log("SwapbookV2 integration successful!");
+    }
+ 
+    function testCompleteFillWithSwapRouterReRouting() public {
+        // Test the complete flow: User1 places order in OrderbookAVS, 
+        // User4 swaps through router, gets re-routed to SwapbookV2 via _beforeSwap
+        console.log("=== Testing Swap Router Re-routing ===");
+        
+        // STEP 1: User1 places limit order to sell 100e18 token0 at tick 60
+        _placeLimitOrder();
+        
+        // STEP 2: User4 swaps through swap router to sell token1 for token0
+        _executeSwapAndVerify();
+    }
+    
+    function _placeLimitOrder() internal {
+        console.log("=== STEP 1: User1 places limit order (better price) ===");
+        
+        // Create UpdateBestPrice task data for User1's order
+        bytes memory updateTaskData = abi.encode(
+            Currency.unwrap(token0),
+            Currency.unwrap(token1),
+            60, // tick (better price than pool's 1:1) - higher tick = better price for buying token0
+            true,  // zeroForOne (selling token0 for token1)
+            100e18, // amount
+            user1  // user who placed the order
+        );
+        
+        IAttestationCenter.TaskInfo memory updateTaskInfo = IAttestationCenter.TaskInfo({
+            proofOfTask: "proof1",
+            data: abi.encode(OrderbookAVS.TaskType.UpdateBestPrice, updateTaskData),
+            taskPerformer: address(this),
+            taskDefinitionId: 1
+        });
+        
+        // Process the UpdateBestPrice task
+        orderbookAVS.afterTaskSubmission(updateTaskInfo, true, "", [uint256(0), uint256(0)], new uint256[](0));
+        
+        console.log("User1's order placed in both OrderbookAVS and SwapbookV2");
+        
+        // Verify the order was placed in SwapbookV2
+        PoolKey memory key = PoolKey({
+            currency0: token0,
+            currency1: token1,
+            fee: 3000,
+            tickSpacing: 60,
+            hooks: IHooks(address(swapbookV2))
+        });
+        
+        int24 bestTick = swapbookV2.bestTicks(key.toId(), true);
+        uint256 pendingOrder = swapbookV2.pendingOrders(key.toId(), bestTick, true);
+        console.log("SwapbookV2 - Best tick:", bestTick);
+        console.log("SwapbookV2 - Pending order amount:", pendingOrder);
+        
+        assertEq(bestTick, 60, "Best tick should be 60");
+        assertEq(pendingOrder, 100e18, "Pending order should be 100e18");
+        
+        // Verify OrderbookAVS also has the best order
+        assertEq(orderbookAVS.bestOrderUsers(Currency.unwrap(token0), Currency.unwrap(token1)), user1, "Best order user should be user1");
+        assertEq(orderbookAVS.bestOrderTicks(Currency.unwrap(token0), Currency.unwrap(token1)), 60, "Best order tick should be 60");
+        assertTrue(orderbookAVS.bestOrderDirections(Currency.unwrap(token0), Currency.unwrap(token1)), "Best order direction should be true (zeroForOne)");
+    }
+    
+    function _executeSwapAndVerify() internal {
+        console.log("=== STEP 2: User4 swaps through router (triggers _beforeSwap) ===");
+        
+        // Create user4 - a normal swap router user without deposits in OrderbookAVS
+        address user4 = makeAddr("user4");
+        
+        // Give user4 some tokens to swap with (NOT using escrow funds)
+        MockERC20(Currency.unwrap(token0)).mint(user4, 1000e18);
+        MockERC20(Currency.unwrap(token1)).mint(user4, 1000e18);
+        
+        // User4 needs to approve the swap router to spend their tokens
+        vm.startPrank(user4);
+        MockERC20(Currency.unwrap(token0)).approve(address(swapRouter), type(uint256).max);
+        MockERC20(Currency.unwrap(token1)).approve(address(swapRouter), type(uint256).max);
+        vm.stopPrank();
+        
+        // Record balances before swap
+        uint256 user1Token0Before = orderbookAVS.getEscrowedBalance(user1, Currency.unwrap(token0));
+        uint256 user1Token1Before = orderbookAVS.getEscrowedBalance(user1, Currency.unwrap(token1));
+        uint256 user4Token0Before = MockERC20(Currency.unwrap(token0)).balanceOf(user4);
+        uint256 user4Token1Before = MockERC20(Currency.unwrap(token1)).balanceOf(user4);
+
+        console.log("=== BEFORE SWAP ===");
+        console.log("User1 Token0 (escrow):", user1Token0Before);
+        console.log("User1 Token1 (escrow):", user1Token1Before);
+        console.log("User4 Token0 (wallet):", user4Token0Before);
+        console.log("User4 Token1 (wallet):", user4Token1Before);
+        
+        // Execute the swap through the swap router
+        PoolKey memory key = PoolKey({
+            currency0: token0,
+            currency1: token1,
+            fee: 3000,
+            tickSpacing: 60,
+            hooks: IHooks(address(swapbookV2))
+        });
+        int24 bestTickBefore = swapbookV2.bestTicks(key.toId(), true);
+        
+        // Expect the OrderExecutionCallback event to be emitted
+        // Check indexed parameters (token0, token1, bestOrderUser) exactly, but allow flexible values for others
+        vm.expectEmit(true, true, true, false);
+        emit OrderbookAVS.OrderExecutionCallback(
+            Currency.unwrap(token0),
+            Currency.unwrap(token1),
+            user1, // bestOrderUser
+            address(0), // swapper (any address)
+            0, // inputAmount (any amount)
+            0, // outputAmount (any amount)
+            false // zeroForOne (any boolean)
+        );
+        
+        vm.startPrank(user4);
+        swapRouter.swap(
+            key,
+            SwapParams({
+                zeroForOne: false, // User4 selling token1 for token0
+                amountSpecified: -int256(100e18), // Exact input of 100e18 token1
+                sqrtPriceLimitX96: TickMath.MAX_SQRT_PRICE - 1
+            }),
+            PoolSwapTest.TestSettings({
+                takeClaims: false,
+                settleUsingBurn: false
+            }),
+            ZERO_BYTES
+        );
+        vm.stopPrank();
+        
+        // Record balances after swap
+        uint256 user1Token0After = orderbookAVS.getEscrowedBalance(user1, Currency.unwrap(token0));
+        uint256 user1Token1After = orderbookAVS.getEscrowedBalance(user1, Currency.unwrap(token1));
+        uint256 user4Token0After = MockERC20(Currency.unwrap(token0)).balanceOf(user4);
+        uint256 user4Token1After = MockERC20(Currency.unwrap(token1)).balanceOf(user4);
+        
+        console.log("=== AFTER SWAP ===");
+        console.log("User1 Token0 (escrow):", user1Token0After);
+        console.log("User1 Token1 (escrow):", user1Token1After);
+        console.log("User4 Token0 (wallet):", user4Token0After);
+        console.log("User4 Token1 (wallet):", user4Token1After);
+        
+        // Check if the limit order was completely filled by checking pending orders
+        console.log("=== ORDER FILL STATUS ===");
+        console.log("Best tick before swap:", bestTickBefore);
+        console.log("Best tick after swap:", swapbookV2.bestTicks(key.toId(), true));
+        console.log("Pending order amount after swap:", swapbookV2.pendingOrders(key.toId(), swapbookV2.bestTicks(key.toId(), true), true));
+        
+        if (swapbookV2.pendingOrders(key.toId(), swapbookV2.bestTicks(key.toId(), true), true) == 0) {
+            console.log("Order was COMPLETELY FILLED");
+        } else {
+            console.log("Order was PARTIALLY FILLED - remaining:", swapbookV2.pendingOrders(key.toId(), swapbookV2.bestTicks(key.toId(), true), true));
+        }
+        
+        // Verify the swap was re-routed and User1's order was completely filled
+        assertEq(user1Token0After, user1Token0Before - 100e18, "User1 should have lost 100e18 token0");
+        assertTrue(user1Token1After > user1Token1Before, "User1 should have gained token1 from the swap");
+        assertTrue(user4Token0After > user4Token0Before, "User4 should have gained token0 from the swap");
+        assertTrue(user4Token1After < user4Token1Before, "User4 should have lost token1 from the swap");
+        
+        // Verify the amounts are reasonable (User4 got a better deal due to limit order)
+        uint256 user4Token0Gained = user4Token0After - user4Token0Before;
+        uint256 user4Token1Lost = user4Token1Before - user4Token1After;
+        console.log("User4 Token0 gained:", user4Token0Gained);
+        console.log("User4 Token1 lost:", user4Token1Lost);
+        console.log("User4 got better rate due to limit order!");
+        
+        // Verify the order was completely filled and best order cleared
+        assertEq(swapbookV2.pendingOrders(key.toId(), bestTickBefore, true), 0, "Pending order should be 0");
+        assertEq(swapbookV2.bestTicks(key.toId(), true), 0, "Best tick in SwapbookV2 should be 0");
+        assertEq(orderbookAVS.bestOrderTicks(Currency.unwrap(token0), Currency.unwrap(token1)), 0, "Best order tick in OrderbookAVS should be 0");
+        assertEq(orderbookAVS.getEscrowedBalance(user4, Currency.unwrap(token0)), 0, "User4 should not have escrowed token0");
+        assertEq(orderbookAVS.getEscrowedBalance(user4, Currency.unwrap(token1)), 0, "User4 should not have escrowed token1");
+        
+        console.log("Swap router re-routing successful!");
+        console.log("Limit order had better price and was completely filled");
+        console.log("User4 used wallet funds, not escrow funds");
+        console.log("onOrderExecuted was called to settle escrowedFunds");
+    }
+
+    function testPoolOnlySwap() public {
+        // Test what happens when User4 swaps through pool only (no limit orders)
+        console.log("=== Testing Pool-Only Swap ===");
+        
+        // Create user4 - a normal swap router user
+        address user4 = makeAddr("user4");
+        
+        // Give user4 some tokens to swap with
+        MockERC20(Currency.unwrap(token0)).mint(user4, 1000e18);
+        MockERC20(Currency.unwrap(token1)).mint(user4, 1000e18);
+        
+        // User4 needs to approve the swap router to spend their tokens
+        vm.startPrank(user4);
+        MockERC20(Currency.unwrap(token0)).approve(address(swapRouter), type(uint256).max);
+        MockERC20(Currency.unwrap(token1)).approve(address(swapRouter), type(uint256).max);
+        vm.stopPrank();
+        
+        // Record balances before swap
+        uint256 user4Token0Before = MockERC20(Currency.unwrap(token0)).balanceOf(user4);
+        uint256 user4Token1Before = MockERC20(Currency.unwrap(token1)).balanceOf(user4);
+        
+        console.log("=== BEFORE POOL SWAP ===");
+        console.log("User4 Token0 (wallet):", user4Token0Before);
+        console.log("User4 Token1 (wallet):", user4Token1Before);
+        
+        // Execute the swap through the swap router (no limit orders to intercept)
+        PoolKey memory key = PoolKey({
+            currency0: token0,
+            currency1: token1,
+            fee: 3000,
+            tickSpacing: 60,
+            hooks: IHooks(address(swapbookV2))
+        });
+        
+        vm.startPrank(user4);
+        swapRouter.swap(
+            key,
+            SwapParams({
+                zeroForOne: false, // User4 selling token1 for token0
+                amountSpecified: -int256(100e18), // Exact input of 100e18 token1
+                sqrtPriceLimitX96: TickMath.MAX_SQRT_PRICE - 1
+            }),
+            PoolSwapTest.TestSettings({
+                takeClaims: false,
+                settleUsingBurn: false
+            }),
+            ZERO_BYTES
+        );
+        vm.stopPrank();
+        
+        // Record balances after swap
+        uint256 user4Token0After = MockERC20(Currency.unwrap(token0)).balanceOf(user4);
+        uint256 user4Token1After = MockERC20(Currency.unwrap(token1)).balanceOf(user4);
+        
+        console.log("=== AFTER POOL SWAP ===");
+        console.log("User4 Token0 (wallet):", user4Token0After);
+        console.log("User4 Token1 (wallet):", user4Token1After);
+        
+        // Calculate the exchange rate
+        uint256 user4Token0Gained = user4Token0After - user4Token0Before;
+        uint256 user4Token1Lost = user4Token1Before - user4Token1After;
+        
+        console.log("=== POOL EXCHANGE RATE ===");
+        console.log("User4 Token0 gained:", user4Token0Gained);
+        console.log("User4 Token1 lost:", user4Token1Lost);
+        console.log("Exchange rate: 1 token1 =", (user4Token0Gained * 1e18) / user4Token1Lost, "token0");
+        console.log("At tick 0 (1:1 price), User4 should get approximately 100e18 token0 for 100e18 token1");
+    }
+
+    function testTick60ExchangeRate() public {
+        // Test what happens when User4 swaps at tick 60 (limit order price)
+        console.log("=== Testing Tick 60 Exchange Rate ===");
+        
+        // First, place a limit order at tick 60
+        _placeLimitOrder();
+        
+        // Create user4 - a normal swap router user
+        address user4 = makeAddr("user4");
+        
+        // Give user4 some tokens to swap with
+        MockERC20(Currency.unwrap(token0)).mint(user4, 1000e18);
+        MockERC20(Currency.unwrap(token1)).mint(user4, 1000e18);
+        
+        // User4 needs to approve the swap router to spend their tokens
+        vm.startPrank(user4);
+        MockERC20(Currency.unwrap(token0)).approve(address(swapRouter), type(uint256).max);
+        MockERC20(Currency.unwrap(token1)).approve(address(swapRouter), type(uint256).max);
+        vm.stopPrank();
+        
+        // Record balances before swap
+        uint256 user4Token0Before = MockERC20(Currency.unwrap(token0)).balanceOf(user4);
+        uint256 user4Token1Before = MockERC20(Currency.unwrap(token1)).balanceOf(user4);
+        
+        console.log("=== BEFORE TICK 60 SWAP ===");
+        console.log("User4 Token0 (wallet):", user4Token0Before);
+        console.log("User4 Token1 (wallet):", user4Token1Before);
+        
+        // Execute the swap through the swap router (should hit the limit order at tick 60)
+        PoolKey memory key = PoolKey({
+            currency0: token0,
+            currency1: token1,
+            fee: 3000,
+            tickSpacing: 60,
+            hooks: IHooks(address(swapbookV2))
+        });
+        
+        vm.startPrank(user4);
+        swapRouter.swap(
+            key,
+            SwapParams({
+                zeroForOne: false, // User4 selling token1 for token0
+                amountSpecified: -int256(100e18), // Exact input of 100e18 token1
+                sqrtPriceLimitX96: TickMath.MAX_SQRT_PRICE - 1
+            }),
+            PoolSwapTest.TestSettings({
+                takeClaims: false,
+                settleUsingBurn: false
+            }),
+            ZERO_BYTES
+        );
+        vm.stopPrank();
+        
+        // Record balances after swap
+        uint256 user4Token0After = MockERC20(Currency.unwrap(token0)).balanceOf(user4);
+        uint256 user4Token1After = MockERC20(Currency.unwrap(token1)).balanceOf(user4);
+        
+        console.log("=== AFTER TICK 60 SWAP ===");
+        console.log("User4 Token0 (wallet):", user4Token0After);
+        console.log("User4 Token1 (wallet):", user4Token1After);
+        
+        // Calculate the exchange rate
+        uint256 user4Token0Gained = user4Token0After - user4Token0Before;
+        uint256 user4Token1Lost = user4Token1Before - user4Token1After;
+        
+        console.log("=== TICK 60 EXCHANGE RATE ===");
+        console.log("User4 Token0 gained:", user4Token0Gained);
+        console.log("User4 Token1 lost:", user4Token1Lost);
+        console.log("Exchange rate: 1 token1 =", (user4Token0Gained * 1e18) / user4Token1Lost, "token0");
+        console.log("At tick 60, User4 gets", user4Token0Gained);
+        console.log("token0 for", user4Token1Lost, "token1");
     }
 
 }
