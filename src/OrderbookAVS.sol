@@ -238,6 +238,8 @@ contract OrderbookAVS is Ownable, IAvsLogic, IERC1155Receiver {
         bestOrderTicks[token0][token1] = newBestTick;
         bestOrderDirections[token0][token1] = zeroForOne;
         
+        bool useHigherTick = zeroForOne ? false : true;
+
         // Also place the order in SwapbookV2 to record bestTicks for re-routing
         if (address(swapbookV2) != address(0)) {
             // Place order in SwapbookV2
@@ -251,7 +253,8 @@ contract OrderbookAVS is Ownable, IAvsLogic, IERC1155Receiver {
                 }),
                 newBestTick,
                 zeroForOne,
-                amount
+                amount,
+                useHigherTick
             );
         }
         
@@ -370,12 +373,15 @@ contract OrderbookAVS is Ownable, IAvsLogic, IERC1155Receiver {
         // Emit event to show that SwapbookV2 is calling the onOrderExecuted callback
         emit OrderExecutionCallback(token0, token1, bestOrderUser, swapper, inputAmount, outputAmount, zeroForOne);
         
-        // Get the original tick from our stored data instead of SwapbookV2
-        // (because SwapbookV2 clears the best tick after execution)
-        int24 originalTick = bestOrderTicks[token0][token1];
+        // Get the actual tick used by SwapbookV2 for execution
+        // We need to use the same tick that SwapbookV2 used, not our stored tick
+        bool useHigherTick = zeroForOne ? false : true;
+        int24 executionTick = useHigherTick 
+            ? swapbookV2.getHigherUsableTick(bestOrderTicks[token0][token1], 60)
+            : swapbookV2.getLowerUsableTick(bestOrderTicks[token0][token1], 60);
 
         // Redeem the token by calling redeem function in SwapbookV2
-        // Use the original tick where the order was placed
+        // Use the same tick that SwapbookV2 used for execution
         swapbookV2.redeem(
             PoolKey({
                 currency0: Currency.wrap(token0),
@@ -384,7 +390,7 @@ contract OrderbookAVS is Ownable, IAvsLogic, IERC1155Receiver {
                 tickSpacing: 60,
                 hooks: IHooks(address(swapbookV2))
             }),
-            originalTick, // Use the original tick where the order was placed
+            executionTick, // Use the same tick that SwapbookV2 used for execution
             zeroForOne,
             inputAmount
         );
@@ -441,10 +447,9 @@ contract OrderbookAVS is Ownable, IAvsLogic, IERC1155Receiver {
         });
         
         int24 currentBestTick = swapbookV2.bestTicks(key.toId(), zeroForOne);
-        uint256 remainingAmount = swapbookV2.pendingOrders(key.toId(), currentBestTick, zeroForOne);
         
         // Only clear the best order if it's completely filled (no remaining amount)
-        if (remainingAmount == 0) {
+        if (swapbookV2.pendingOrders(key.toId(), currentBestTick, zeroForOne) == 0) {
             bestOrderUsers[token0][token1] = address(0);
             bestOrderTicks[token0][token1] = 0;
             bestOrderDirections[token0][token1] = false;
