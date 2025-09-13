@@ -83,6 +83,7 @@ contract OrderbookAVS is Ownable, IAvsLogic, IERC1155Receiver {
     mapping(address => mapping(address => address)) public bestOrderUsers; // token0 => token1 => user
     mapping(address => mapping(address => int24)) public bestOrderTicks; // token0 => token1 => tick
     mapping(address => mapping(address => bool)) public bestOrderDirections; // token0 => token1 => zeroForOne
+    mapping(address => mapping(address => bool)) public bestOrderUseHigherTick; // token0 => token1 => useHigherTick
 
     // Modifiers
     modifier onlyAuthorized() {
@@ -230,15 +231,14 @@ contract OrderbookAVS is Ownable, IAvsLogic, IERC1155Receiver {
     }
 
     function _processUpdateBestPrice(uint256 taskId, bytes memory taskData) internal returns (bool) {
-        (address token0, address token1, int24 newBestTick, bool zeroForOne, uint256 amount, address user) = 
-            abi.decode(taskData, (address, address, int24, bool, uint256, address));
-        
+        (address token0, address token1, int24 newBestTick, bool zeroForOne, uint256 amount, address user, bool useHigherTick) = 
+            abi.decode(taskData, (address, address, int24, bool, uint256, address, bool));
+
         // Store the best order information in OrderbookAVS
         bestOrderUsers[token0][token1] = user;
         bestOrderTicks[token0][token1] = newBestTick;
         bestOrderDirections[token0][token1] = zeroForOne;
-        
-        bool useHigherTick = zeroForOne ? false : true;
+        bestOrderUseHigherTick[token0][token1] = useHigherTick;
 
         // Also place the order in SwapbookV2 to record bestTicks for re-routing
         if (address(swapbookV2) != address(0)) {
@@ -375,7 +375,7 @@ contract OrderbookAVS is Ownable, IAvsLogic, IERC1155Receiver {
         
         // Get the actual tick used by SwapbookV2 for execution
         // We need to use the same tick that SwapbookV2 used, not our stored tick
-        bool useHigherTick = zeroForOne ? false : true;
+        bool useHigherTick = bestOrderUseHigherTick[token0][token1];
         int24 executionTick = useHigherTick 
             ? swapbookV2.getHigherUsableTick(bestOrderTicks[token0][token1], 60)
             : swapbookV2.getLowerUsableTick(bestOrderTicks[token0][token1], 60);

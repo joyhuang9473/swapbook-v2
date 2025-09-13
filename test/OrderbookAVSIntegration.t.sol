@@ -152,7 +152,8 @@ contract OrderbookAVSIntegrationTest is Test, Deployers, ERC1155Holder {
             -1000, // tick
             true,  // zeroForOne (selling token0 for token1)
             100e18, // amount
-            user1  // user who placed the order
+            user1,  // user who placed the order
+            false // useHigherTick
         );
         
         IAttestationCenter.TaskInfo memory updateTaskInfo = IAttestationCenter.TaskInfo({
@@ -270,7 +271,8 @@ contract OrderbookAVSIntegrationTest is Test, Deployers, ERC1155Holder {
             -1000, // tick
             true,  // zeroForOne (selling token0 for token1)
             100e18, // amount
-            user1  // user who placed the order
+            user1,  // user who placed the order
+            false // useHigherTick
         );
         
         IAttestationCenter.TaskInfo memory updateTaskInfo = IAttestationCenter.TaskInfo({
@@ -387,7 +389,8 @@ contract OrderbookAVSIntegrationTest is Test, Deployers, ERC1155Holder {
             -1000, // tick
             true,  // zeroForOne (selling token0 for token1)
             100e18, // amount
-            user1  // user who placed the order
+            user1,  // user who placed the order
+            false // useHigherTick
         );
         
         IAttestationCenter.TaskInfo memory updateTaskInfo = IAttestationCenter.TaskInfo({
@@ -480,7 +483,8 @@ contract OrderbookAVSIntegrationTest is Test, Deployers, ERC1155Holder {
             60, // tick (better price than pool's 1:1)
             true,  // zeroForOne (selling token0 for token1)
             200e18, // amount (larger order - 200e18 token0)
-            user1  // user who placed the order
+            user1,  // user who placed the order
+            false // useHigherTick
         );
         
         IAttestationCenter.TaskInfo memory updateTaskInfo = IAttestationCenter.TaskInfo({
@@ -656,7 +660,8 @@ contract OrderbookAVSIntegrationTest is Test, Deployers, ERC1155Holder {
             60, // tick (better price than pool's 1:1)
             true,  // zeroForOne (selling token0 for token1)
             50e18, // amount (small order - 50e18 token0)
-            user1  // user who placed the order
+            user1,  // user who placed the order
+            false // useHigherTick
         );
         
         IAttestationCenter.TaskInfo memory updateTaskInfo = IAttestationCenter.TaskInfo({
@@ -791,7 +796,8 @@ contract OrderbookAVSIntegrationTest is Test, Deployers, ERC1155Holder {
             60, // tick (better price than pool's 1:1) - higher tick = better price for buying token0
             true,  // zeroForOne (selling token0 for token1)
             100e18, // amount
-            user1  // user who placed the order
+            user1,  // user who placed the order
+            false // useHigherTick
         );
         
         IAttestationCenter.TaskInfo memory updateTaskInfo = IAttestationCenter.TaskInfo({
@@ -1118,7 +1124,8 @@ contract OrderbookAVSIntegrationTest is Test, Deployers, ERC1155Holder {
             100, // tick 100
             true,  // zeroForOne (selling token0 for token1)
             100e18, // amount
-            user1  // user who placed the order
+            user1,  // user who placed the order
+            false // useHigherTick
         );
         
         IAttestationCenter.TaskInfo memory updateTaskInfo = IAttestationCenter.TaskInfo({
