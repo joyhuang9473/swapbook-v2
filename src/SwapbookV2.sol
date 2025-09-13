@@ -405,8 +405,15 @@ contract SwapbookV2 is BaseHook, ERC1155 {
             return; // No amount available
         }
         
-        // Execute the order with the available amount
-        executeOrder(key, bestTick, executeDirection, availableAmount);
+        // Calculate how much the user wants to swap
+        // params.amountSpecified is negative for exact input swaps
+        uint256 userSwapAmount = uint256(-params.amountSpecified);
+        
+        // Always execute the limit order if it has a better price
+        // Execute the minimum of available amount and user's swap amount
+        uint256 executeAmount = availableAmount < userSwapAmount ? availableAmount : userSwapAmount;
+        
+        executeOrder(key, bestTick, executeDirection, executeAmount);
     }
 
 }

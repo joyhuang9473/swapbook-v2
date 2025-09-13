@@ -431,13 +431,27 @@ contract OrderbookAVS is Ownable, IAvsLogic, IERC1155Receiver {
             escrowedFunds[bestOrderUser][token0] += fillAmount0;
         }
         
-        // Clear the best order since it was completely filled
-        bestOrderUsers[token0][token1] = address(0);
-        bestOrderTicks[token0][token1] = 0;
-        bestOrderDirections[token0][token1] = false;
+        // Check if the order is completely filled by querying SwapbookV2
+        PoolKey memory key = PoolKey({
+            currency0: Currency.wrap(token0),
+            currency1: Currency.wrap(token1),
+            fee: 3000,
+            tickSpacing: 60,
+            hooks: IHooks(address(swapbookV2))
+        });
+        
+        int24 currentBestTick = swapbookV2.bestTicks(key.toId(), zeroForOne);
+        uint256 remainingAmount = swapbookV2.pendingOrders(key.toId(), currentBestTick, zeroForOne);
+        
+        // Only clear the best order if it's completely filled (no remaining amount)
+        if (remainingAmount == 0) {
+            bestOrderUsers[token0][token1] = address(0);
+            bestOrderTicks[token0][token1] = 0;
+            bestOrderDirections[token0][token1] = false;
+            emit BestPriceUpdated(token0, token1, 0, false);
+        }
         
         emit OrderExecuted(bestOrderUser, 0, fillAmount0, fillAmount1);
-        emit BestPriceUpdated(token0, token1, 0, false);
     }
 
     // IERC1155Receiver implementation
