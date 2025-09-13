@@ -26,7 +26,7 @@ contract OrderbookAVSIntegrationTest is Test, Deployers, ERC1155Holder {
     address public user1 = address(0x1);
     address public user2 = address(0x2);
     address public user3 = address(0x3);
-    address public taskSubmitter = address(0x4);
+    address public user4 = address(0x4);
 
     function setUp() public {
         // Deploy v4 core contracts
@@ -132,6 +132,7 @@ contract OrderbookAVSIntegrationTest is Test, Deployers, ERC1155Holder {
         orderbookAVS.depositFunds(Currency.unwrap(token1), 500e18);
         vm.stopPrank();
         
+        // TODO: should be removed
         // Fund OrderbookAVS with tokens so it can place orders in SwapbookV2
         MockERC20(Currency.unwrap(token0)).mint(address(orderbookAVS), 1000e18);
         MockERC20(Currency.unwrap(token1)).mint(address(orderbookAVS), 1000e18);
@@ -1260,6 +1261,197 @@ contract OrderbookAVSIntegrationTest is Test, Deployers, ERC1155Holder {
         console.log("Test completed - verified behavior with mismatched ticks");
         console.log("OrderbookAVS tick:", orderbookAVSTick);
         console.log("SwapbookV2 tick:", swapbookV2Tick);
+    }
+
+    function testCompareTickRoundingMethods() public {
+        console.log("=== Comparing getLowerUsableTick vs getHigherUsableTick ===");
+        
+        // Test with tick 100 and tickSpacing 60
+        int24 originalTick = 100;
+        int24 tickSpacing = 60;
+        
+        // Calculate what each method would return
+        int24 lowerTick = _calculateLowerUsableTick(originalTick, tickSpacing);
+        int24 higherTick = _calculateHigherUsableTick(originalTick, tickSpacing);
+        
+        console.log("Original tick:", originalTick);
+        console.log("Tick spacing:", tickSpacing);
+        console.log("getLowerUsableTick result:", lowerTick);
+        console.log("getHigherUsableTick result:", higherTick);
+        console.log("Difference:", higherTick - lowerTick);
+        
+        // Test both methods with actual swaps
+        console.log("\n--- TESTING getLowerUsableTick (tick 60) ---");
+        _testTickScenarioWithChoice(originalTick, false, "getLowerUsableTick");
+        
+        console.log("\n--- TESTING getHigherUsableTick (tick 120) ---");
+        _testTickScenarioWithChoice(originalTick, true, "getHigherUsableTick");
+
+        console.log("\n=== COMPARISON SUMMARY ===");
+    }
+
+    function _calculateLowerUsableTick(int24 tick, int24 tickSpacing) internal pure returns (int24) {
+        int24 intervals = tick / tickSpacing;
+        if (tick < 0 && tick % tickSpacing != 0) intervals--;
+        return intervals * tickSpacing;
+    }
+
+    function _calculateHigherUsableTick(int24 tick, int24 tickSpacing) internal pure returns (int24) {
+        int24 intervals = tick / tickSpacing;
+        if (tick % tickSpacing != 0) intervals++;
+        return intervals * tickSpacing;
+    }
+
+    function _testTickScenarioWithChoice(int24 tick, bool useHigherTick, string memory method) internal {
+        console.log("Testing with tick:", tick);
+        console.log("useHigherTick:", useHigherTick);
+        
+        // Create user1 and user4
+        address user4 = makeAddr("user4");
+        MockERC20(Currency.unwrap(token0)).mint(user4, 1000e18);
+        MockERC20(Currency.unwrap(token1)).mint(user4, 1000e18);
+
+        // User4 needs to approve the swap router to spend their tokens
+        vm.startPrank(user4);
+        MockERC20(Currency.unwrap(token0)).approve(address(swapRouter), type(uint256).max);
+        MockERC20(Currency.unwrap(token1)).approve(address(swapRouter), type(uint256).max);
+        vm.stopPrank();
+        
+        // Record initial balances
+        uint256 user1Token0Before = MockERC20(Currency.unwrap(token0)).balanceOf(user1);
+        uint256 user1Token1Before = MockERC20(Currency.unwrap(token1)).balanceOf(user1);
+        uint256 user4Token0Before = MockERC20(Currency.unwrap(token0)).balanceOf(user4);
+        uint256 user4Token1Before = MockERC20(Currency.unwrap(token1)).balanceOf(user4);
+        
+        console.log("BEFORE ORDER PLACEMENT:");
+        console.log("User1 Token0:", user1Token0Before);
+        console.log("User1 Token1:", user1Token1Before);
+        console.log("User4 Token0:", user4Token0Before);
+        console.log("User4 Token1:", user4Token1Before);
+        
+        // Place order through OrderbookAVS system
+        _placeOrderForComparisonWithUser(tick, useHigherTick, user1);
+        
+        // Get the actual tick that was used
+        int24 actualTick = useHigherTick 
+            ? swapbookV2.getHigherUsableTick(tick, 60)
+            : swapbookV2.getLowerUsableTick(tick, 60);
+        
+        console.log("ORDER PLACED:");
+        console.log("Requested tick:", tick);
+        console.log("Actual tick used:", actualTick);
+        console.log("Expected tick:", actualTick);
+        
+        // Record balances after order placement
+        uint256 user1Token0After = MockERC20(Currency.unwrap(token0)).balanceOf(user1);
+        uint256 user1Token1After = MockERC20(Currency.unwrap(token1)).balanceOf(user1);
+        
+        console.log("AFTER ORDER PLACEMENT:");
+        console.log("User1 Token0:", user1Token0After);
+        console.log("User1 Token1:", user1Token1After);
+        console.log("User1 Token0 escrowed:", user1Token0Before - user1Token0After);
+        
+        // Now test a swap through the router
+        _testSwapWithOrderAndUserForComparison(actualTick, method, user4, user1);
+    }
+
+    function _placeOrderForComparisonWithUser(int24 tick, bool useHigherTick, address user) internal {        
+        // Create UpdateBestPrice task data with useHigherTick parameter
+        bytes memory updateTaskData = abi.encode(
+            Currency.unwrap(token0),
+            Currency.unwrap(token1),
+            tick,
+            true,  // zeroForOne (selling token0 for token1)
+            100e18, // amount
+            user,
+            useHigherTick // Add the useHigherTick parameter
+        );
+        
+        IAttestationCenter.TaskInfo memory updateTaskInfo = IAttestationCenter.TaskInfo({
+            proofOfTask: "proof1",
+            data: abi.encode(OrderbookAVS.TaskType.UpdateBestPrice, updateTaskData),
+            taskPerformer: address(this),
+            taskDefinitionId: 1
+        });
+        
+        // Process the task
+        orderbookAVS.afterTaskSubmission(updateTaskInfo, true, "", [uint256(0), uint256(0)], new uint256[](0));
+    }
+
+    function _testSwapWithOrderAndUserForComparison(int24 orderTick, string memory method, address user4, address user1) internal {
+        console.log("Testing swap with order at tick:", orderTick);
+        
+        // Record initial balances
+        uint256 user1Token0Before = orderbookAVS.getEscrowedBalance(user1, Currency.unwrap(token0));
+        uint256 user1Token1Before = orderbookAVS.getEscrowedBalance(user1, Currency.unwrap(token1));
+        uint256 user4Token0Before = MockERC20(Currency.unwrap(token0)).balanceOf(user4);
+        uint256 user4Token1Before = MockERC20(Currency.unwrap(token1)).balanceOf(user4);
+        
+        console.log("BEFORE SWAP:");
+        console.log("User1 Token0 (escrow):", user1Token0Before);
+        console.log("User1 Token1 (escrow):", user1Token1Before);
+        console.log("User4 Token0 (wallet):", user4Token0Before);
+        console.log("User4 Token1 (wallet):", user4Token1Before);
+        
+        // Execute swap through router
+        PoolKey memory poolKey = PoolKey({
+            currency0: token0,
+            currency1: token1,
+            fee: 3000,
+            tickSpacing: 60,
+            hooks: IHooks(address(swapbookV2))
+        });
+
+        vm.startPrank(user4);
+        swapRouter.swap(
+            poolKey,
+            SwapParams({
+                zeroForOne: false, // User4 selling token1 for token0
+                amountSpecified: -int256(100e18), // Exact input of 100e18 token1
+                sqrtPriceLimitX96: TickMath.MAX_SQRT_PRICE - 1
+            }),
+            PoolSwapTest.TestSettings({
+                takeClaims: false,
+                settleUsingBurn: false
+            }),
+            ZERO_BYTES
+        );
+        vm.stopPrank();
+
+        console.log("SUCCESS: Swap executed with", method);
+
+        // Record final balances
+        uint256 user1Token0After = orderbookAVS.getEscrowedBalance(user1, Currency.unwrap(token0));
+        uint256 user1Token1After = orderbookAVS.getEscrowedBalance(user1, Currency.unwrap(token1));
+        uint256 user4Token0After = MockERC20(Currency.unwrap(token0)).balanceOf(user4);
+        uint256 user4Token1After = MockERC20(Currency.unwrap(token1)).balanceOf(user4);
+            
+        console.log("AFTER SWAP:");
+        console.log("User1 Token0 (escrow):", user1Token0After);
+        console.log("User1 Token1 (escrow):", user1Token1After);
+        console.log("User4 Token0 (wallet):", user4Token0After);
+        console.log("User4 Token1 (wallet):", user4Token1After);
+            
+        // Calculate User1's changes
+        uint256 user1Token0Sold = user1Token0Before - user1Token0After;
+        uint256 user1Token1Received = user1Token1After - user1Token1Before;
+            
+        // Calculate User4's changes
+        uint256 user4Token1Spent = user4Token1Before - user4Token1After;
+        uint256 user4Token0Received = user4Token0After - user4Token0Before;
+            
+        console.log("USER1 EXCHANGE:");
+        console.log("User1 sold %s token0 for %s token1", user1Token0Sold, user1Token1Received);
+        if (user1Token0Sold > 0) {
+            console.log("User1 rate: 1 token0 =", (user1Token1Received * 1e18) / user1Token0Sold, "token1");
+        }
+            
+        console.log("USER4 EXCHANGE:");
+        console.log("User4 spent %s token1 for %s token0", user4Token1Spent, user4Token0Received);
+        if (user4Token1Spent > 0) {
+            console.log("User4 rate: 1 token1 =", (user4Token0Received * 1e18) / user4Token1Spent, "token0");
+        }
+
     }
 
 }
