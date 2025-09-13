@@ -21,6 +21,8 @@ import {BalanceDelta} from "v4-core/types/BalanceDelta.sol";
 import {BeforeSwapDelta, BeforeSwapDeltaLibrary} from "v4-core/types/BeforeSwapDelta.sol";
  
 import {FixedPointMathLib} from "solmate/src/utils/FixedPointMathLib.sol";
+
+import {console} from "forge-std/console.sol";
  
 contract SwapbookV2 is BaseHook, ERC1155 {
 
@@ -125,7 +127,7 @@ contract SwapbookV2 is BaseHook, ERC1155 {
     function getLowerUsableTick(
         int24 tick,
         int24 tickSpacing
-    ) private pure returns (int24) {
+    ) public pure returns (int24) {
         // E.g. tickSpacing = 60, tick = -100
         // closest usable tick rounded-down will be -120
     
@@ -141,6 +143,24 @@ contract SwapbookV2 is BaseHook, ERC1155 {
         return intervals * tickSpacing;
     }
 
+    function getHigherUsableTick(
+        int24 tick,
+        int24 tickSpacing
+    ) public pure returns (int24) {
+        // E.g. tickSpacing = 60, tick = 100
+        // closest usable tick rounded-up will be 120
+    
+        // intervals = 100/60 = 1 (integer division)
+        int24 intervals = tick / tickSpacing;
+    
+        // if tick is not already a multiple of tickSpacing, round up
+        if (tick % tickSpacing != 0) intervals++; // round towards positive infinity
+    
+        // actual usable tick, then, is intervals * tickSpacing
+        // i.e. 2 * 60 = 120
+        return intervals * tickSpacing;
+    }
+
     function getOrderId(
         PoolKey calldata key,
         int24 tick,
@@ -153,10 +173,13 @@ contract SwapbookV2 is BaseHook, ERC1155 {
         PoolKey calldata key,
         int24 tickToSellAt,
         bool zeroForOne,
-        uint256 inputAmount
-    ) external returns (int24) {
-        // Get lower actually usable tick given `tickToSellAt`
-        int24 tick = getLowerUsableTick(tickToSellAt, key.tickSpacing);
+        uint256 inputAmount,
+        bool useHigherTick
+    ) public returns (int24) {
+        // Get usable tick based on user preference
+        int24 tick = useHigherTick 
+            ? getHigherUsableTick(tickToSellAt, key.tickSpacing)
+            : getLowerUsableTick(tickToSellAt, key.tickSpacing);
         // Create a pending order
         pendingOrders[key.toId()][tick][zeroForOne] += inputAmount;
         
@@ -182,6 +205,15 @@ contract SwapbookV2 is BaseHook, ERC1155 {
     
         // Return the tick at which the order was actually placed
         return tick;
+    }
+    
+    function placeOrder(
+        PoolKey calldata key,
+        int24 tickToSellAt,
+        bool zeroForOne,
+        uint256 inputAmount
+    ) external returns (int24) {
+        return placeOrder(key, tickToSellAt, zeroForOne, inputAmount, false); // Defaults to getHigherUsableTick
     }
 
     function cancelOrder(
@@ -354,7 +386,7 @@ contract SwapbookV2 is BaseHook, ERC1155 {
     function checkForBetterPrice(
         PoolKey calldata key,
         SwapParams calldata params
-    ) internal view returns (bool) {
+    ) public view returns (bool) {
         // Get current pool price
         (, int24 currentTick, , ) = poolManager.getSlot0(key.toId());
         
