@@ -46,7 +46,7 @@ contract SwapbookV2Test is Test, Deployers, ERC1155Holder {
     
         // Deploy our hook
         uint160 flags = uint160(
-            Hooks.AFTER_INITIALIZE_FLAG | Hooks.BEFORE_SWAP_FLAG
+            Hooks.AFTER_INITIALIZE_FLAG | Hooks.BEFORE_SWAP_FLAG | Hooks.AFTER_SWAP_FLAG
         );
         address hookAddress = address(flags);
         deployCodeTo(
@@ -170,13 +170,13 @@ contract SwapbookV2Test is Test, Deployers, ERC1155Holder {
         assertEq(tokenBalance, 0);
     }
 
-    function test_betterPriceGoesThroughHook() public {
+    function test_afterSwapCompleteFill() public {
         address user1 = address(0x1);
         address user2 = address(0x2);
         
         // Setup users
         _setupUsers(user1, user2);
-        
+
         // Record balances BEFORE placing the order
         uint256 user1Token0Before = token0.balanceOf(user1);
         uint256 user1Token1Before = token1.balanceOf(user1);
@@ -184,14 +184,18 @@ contract SwapbookV2Test is Test, Deployers, ERC1155Holder {
         uint256 user2Token1Before = token1.balanceOf(user2);
         
         // User1 places limit order
-        uint256 orderId = _placeLimitOrder(user1);
-        
+        uint256 orderId = _placeLimitOrder_tick_60(user1);
+
+        // Expect the LimitOrderExecutedAfterSwap event to be emitted
+        vm.expectEmit(true, true, true, true);
+        emit SwapbookV2.LimitOrderExecutedAfterSwap(); // outputAmount will be set by the contract
+
         // User2 performs swap
         _performSwap(user2);
-        
+
         // Check order was filled and redeem
         uint256 claimableOutput = hook.claimableOutputTokens(orderId);
-        assertTrue(claimableOutput > 0, "Order should have been filled through beforeSwap");
+        assertTrue(claimableOutput > 0, "Order should have been filled through afterSwap");
         
         vm.startPrank(user1);
         hook.redeem(key, 60, true, 5e18);
@@ -200,7 +204,42 @@ contract SwapbookV2Test is Test, Deployers, ERC1155Holder {
         // Debug and verify results
         _debugAndVerify(user1, user2, user1Token0Before, user1Token1Before, user2Token0Before, user2Token1Before);
     }
-    
+
+    function test_beforeSwapCompleteFill() public {
+        address user1 = address(0x1);
+        address user2 = address(0x2);
+        
+        // Setup users
+        _setupUsers(user1, user2);
+
+        // Record balances BEFORE placing the order
+        uint256 user1Token0Before = token0.balanceOf(user1);
+        uint256 user1Token1Before = token1.balanceOf(user1);
+        uint256 user2Token0Before = token0.balanceOf(user2);
+        uint256 user2Token1Before = token1.balanceOf(user2);
+        
+        // User1 places limit order
+        uint256 orderId = _placeLimitOrder_tick_0(user1);
+
+        // Expect the LimitOrderExecutedBeforeSwap event to be emitted
+        vm.expectEmit(true, true, true, true);
+        emit SwapbookV2.LimitOrderExecutedBeforeSwap(); // outputAmount will be set by the contract
+
+        // User2 performs swap
+        _performSwap(user2);
+
+        // Check order was filled and redeem
+        uint256 claimableOutput = hook.claimableOutputTokens(orderId);
+        assertTrue(claimableOutput > 0, "Order should have been filled through beforeSwap");
+        
+        vm.startPrank(user1);
+        hook.redeem(key, 0, true, 5e18);
+        vm.stopPrank();
+        
+        // Debug and verify results
+        _debugAndVerify(user1, user2, user1Token0Before, user1Token1Before, user2Token0Before, user2Token1Before);
+    }
+
     function test_swapWithoutHook() public {
         address user2 = address(0x2);
         
@@ -241,180 +280,13 @@ contract SwapbookV2Test is Test, Deployers, ERC1155Holder {
         uint256 user2Token0After = token0.balanceOf(user2);
         uint256 user2Token1After = token1.balanceOf(user2);
         
-        console.log("=== USER2 WITHOUT Swapbook Limit Orders (Pool Only) ===");
+        console.log("=== USER2 WITHOUT Swapbook Limit Orders ===");
         console.log("Token0 Before:", user2Token0Before);
         console.log("Token0 After:", user2Token0After);
         console.log("Token0 Difference:", int256(user2Token0After) - int256(user2Token0Before));
         console.log("Token1 Before:", user2Token1Before);
         console.log("Token1 After:", user2Token1After);
         console.log("Token1 Difference:", int256(user2Token1After) - int256(user2Token1Before));
-    }
-
-    function test_worsePriceGoesThroughPool() public {
-        address user1 = address(0x1);
-        address user2 = address(0x2);
-        
-        // Setup users
-        _setupUsers(user1, user2);
-        
-        // Record balances BEFORE placing the order
-        uint256 user1Token0Before = token0.balanceOf(user1);
-        uint256 user1Token1Before = token1.balanceOf(user1);
-        uint256 user2Token0Before = token0.balanceOf(user2);
-        uint256 user2Token1Before = token1.balanceOf(user2);
-        
-        // User1 places a limit order with a WORSE price (lower tick = worse price for selling token0)
-        // We'll use tick -60 instead of tick 60, which gives a much worse price
-        vm.startPrank(user1);
-        int24 worseTick = -60; // Much worse price than current pool price
-        int24 tickLower = hook.placeOrder(key, worseTick, true, 5e18); // Sell token0 for token1
-        assertEq(tickLower, -60);
-        uint256 orderId = hook.getOrderId(key, tickLower, true);
-        uint256 tokenBalance = hook.balanceOf(user1, orderId);
-        assertEq(tokenBalance, 5e18);
-        vm.stopPrank();
-        
-        // User2 performs swap - this should go through the pool since the limit order price is worse
-        vm.startPrank(user2);
-        swapRouter.swap(
-            key,
-            SwapParams({
-                zeroForOne: false, // Swap token1 for token0
-                amountSpecified: -int256(1e18), // Exact input
-                sqrtPriceLimitX96: TickMath.MAX_SQRT_PRICE - 1
-            }),
-            PoolSwapTest.TestSettings({
-                takeClaims: false,
-                settleUsingBurn: false
-            }),
-            ZERO_BYTES
-        );
-        vm.stopPrank();
-        
-        // Check that the limit order was NOT filled (worse price)
-        uint256 claimableOutput = hook.claimableOutputTokens(orderId);
-        assertEq(claimableOutput, 0, "Order should NOT have been filled with worse price");
-        
-        // Check final balances
-        uint256 user1Token0After = token0.balanceOf(user1);
-        uint256 user1Token1After = token1.balanceOf(user1);
-        uint256 user2Token0After = token0.balanceOf(user2);
-        uint256 user2Token1After = token1.balanceOf(user2);
-        
-        console.log("=== USER1 (Limit Order with WORSE Price) ===");
-        console.log("Token0 Before:", user1Token0Before);
-        console.log("Token0 After:", user1Token0After);
-        console.log("Token0 Difference:", int256(user1Token0After) - int256(user1Token0Before));
-        console.log("Token1 Before:", user1Token1Before);
-        console.log("Token1 After:", user1Token1After);
-        console.log("Token1 Difference:", int256(user1Token1After) - int256(user1Token1Before));
-        
-        console.log("=== USER2 (Swap went through POOL) ===");
-        console.log("Token0 Before:", user2Token0Before);
-        console.log("Token0 After:", user2Token0After);
-        console.log("Token0 Difference:", int256(user2Token0After) - int256(user2Token0Before));
-        console.log("Token1 Before:", user2Token1Before);
-        console.log("Token1 After:", user2Token1After);
-        console.log("Token1 Difference:", int256(user2Token1After) - int256(user2Token1Before));
-        
-        // User1 should have lost token0 from placing the order, but gained nothing from execution
-        assertTrue(user1Token0After < user1Token0Before, "User1 should have lost token0 from placing order");
-        assertEq(user1Token1After, user1Token1Before, "User1 should not have gained token1 (order not filled)");
-        
-        // User2 should have gained token0 and lost token1 (normal pool swap)
-        assertTrue(user2Token0After > user2Token0Before, "User2 should have gained token0 from pool swap");
-        assertTrue(user2Token1After < user2Token1Before, "User2 should have lost token1 from pool swap");
-    }
-
-    function test_partialFillWithPoolCompletion() public {
-        address user1 = address(0x1);
-        address user2 = address(0x2);
-        
-        // Setup users
-        _setupUsers(user1, user2);
-        
-        // Record balances BEFORE placing the order
-        uint256 user1Token0Before = token0.balanceOf(user1);
-        uint256 user1Token1Before = token1.balanceOf(user1);
-        uint256 user2Token0Before = token0.balanceOf(user2);
-        uint256 user2Token1Before = token1.balanceOf(user2);
-        
-        // User1 places a limit order with BETTER price but SMALLER amount
-        // Only 0.5e18 token0 available (less than user2's 1e18 token1 swap)
-        vm.startPrank(user1);
-        int24 betterTick = 60; // Better price than current pool price
-        int24 tickLower = hook.placeOrder(key, betterTick, true, 0.5e18); // Sell only 0.5 token0 for token1
-        assertEq(tickLower, 60);
-        uint256 orderId = hook.getOrderId(key, tickLower, true);
-        uint256 tokenBalance = hook.balanceOf(user1, orderId);
-        assertEq(tokenBalance, 0.5e18);
-        vm.stopPrank();
-        
-        // User2 performs a LARGER swap (1e18 token1) - should be partially filled by limit order
-        vm.startPrank(user2);
-        swapRouter.swap(
-            key,
-            SwapParams({
-                zeroForOne: false, // Swap token1 for token0
-                amountSpecified: -int256(1e18), // Exact input - larger than limit order
-                sqrtPriceLimitX96: TickMath.MAX_SQRT_PRICE - 1
-            }),
-            PoolSwapTest.TestSettings({
-                takeClaims: false,
-                settleUsingBurn: false
-            }),
-            ZERO_BYTES
-        );
-        vm.stopPrank();
-        
-        // Check that the limit order was PARTIALLY filled
-        uint256 claimableOutput = hook.claimableOutputTokens(orderId);
-        assertTrue(claimableOutput > 0, "Order should have been partially filled");
-        assertTrue(claimableOutput < 1e18, "Order should not be fully filled (partial only)");
-        
-        // User1 redeems their partially filled order
-        vm.startPrank(user1);
-        hook.redeem(key, betterTick, true, 0.5e18);
-        vm.stopPrank();
-        
-        // Check final balances
-        uint256 user1Token0After = token0.balanceOf(user1);
-        uint256 user1Token1After = token1.balanceOf(user1);
-        uint256 user2Token0After = token0.balanceOf(user2);
-        uint256 user2Token1After = token1.balanceOf(user2);
-        
-        console.log("=== USER1 (Partial Limit Order Fill) ===");
-        console.log("Token0 Before:", user1Token0Before);
-        console.log("Token0 After:", user1Token0After);
-        console.log("Token0 Difference:", int256(user1Token0After) - int256(user1Token0Before));
-        console.log("Token1 Before:", user1Token1Before);
-        console.log("Token1 After:", user1Token1After);
-        console.log("Token1 Difference:", int256(user1Token1After) - int256(user1Token1Before));
-        
-        console.log("=== USER2 (Partial Fill + Pool Completion) ===");
-        console.log("Token0 Before:", user2Token0Before);
-        console.log("Token0 After:", user2Token0After);
-        console.log("Token0 Difference:", int256(user2Token0After) - int256(user2Token0Before));
-        console.log("Token1 Before:", user2Token1Before);
-        console.log("Token1 After:", user2Token1After);
-        console.log("Token1 Difference:", int256(user2Token1After) - int256(user2Token1Before));
-        
-        // User1 should have lost token0 from placing the order and gained some token1 from partial fill
-        assertTrue(user1Token0After < user1Token0Before, "User1 should have lost token0 from placing order");
-        assertTrue(user1Token1After > user1Token1Before, "User1 should have gained some token1 from partial fill");
-        
-        // User2 should have gained token0 and lost token1 (from both limit order and pool)
-        assertTrue(user2Token0After > user2Token0Before, "User2 should have gained token0 from partial fill + pool");
-        assertTrue(user2Token1After < user2Token1Before, "User2 should have lost token1 from partial fill + pool");
-        
-        // User2 should get more token0 than just pool-only (due to partial limit order fill)
-        // But less than full limit order fill (since it was partial)
-        uint256 poolOnlyToken0 = 921161300970596286; // From previous test
-        uint256 fullLimitOrderToken0 = 1925892024947750006; // From previous test
-        uint256 actualToken0Gained = user2Token0After - user2Token0Before;
-        
-        assertTrue(actualToken0Gained > poolOnlyToken0, "Should get more than pool-only due to partial limit order");
-        assertTrue(actualToken0Gained < fullLimitOrderToken0, "Should get less than full limit order due to partial fill");
     }
 
     function _setupUsers(address user1, address user2) internal {
@@ -435,18 +307,29 @@ contract SwapbookV2Test is Test, Deployers, ERC1155Holder {
         MockERC20(Currency.unwrap(token1)).approve(address(swapRouter), type(uint256).max);
         vm.stopPrank();
     }
-    
-    function _placeLimitOrder(address user) internal returns (uint256) {
+
+    function _placeLimitOrder_tick_0(address user) internal returns (uint256) {
         vm.startPrank(user);
-        int24 tickLower = hook.placeOrder(key, 60, true, 5e18);
-        assertEq(tickLower, 60);
+        int24 tickLower = hook.placeOrder(key, 0, true, 5e18);
+        assertEq(tickLower, 0); // For tick 0 with tickSpacing 60, the usable tick is 0
         uint256 orderId = hook.getOrderId(key, tickLower, true);
         uint256 tokenBalance = hook.balanceOf(user, orderId);
         assertEq(tokenBalance, 5e18);
         vm.stopPrank();
         return orderId;
     }
-    
+
+    function _placeLimitOrder_tick_60(address user) internal returns (uint256) {
+        vm.startPrank(user);
+        int24 tickLower = hook.placeOrder(key, 60, true, 10e18); // Place a larger order (10e18)
+        assertEq(tickLower, 60);
+        uint256 orderId = hook.getOrderId(key, tickLower, true);
+        uint256 tokenBalance = hook.balanceOf(user, orderId);
+        assertEq(tokenBalance, 10e18);
+        vm.stopPrank();
+        return orderId;
+    }
+
     function _performSwap(address user) internal {
         vm.startPrank(user);
         swapRouter.swap(

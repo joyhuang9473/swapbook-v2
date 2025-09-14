@@ -33,6 +33,11 @@ contract SwapbookV2 is BaseHook, ERC1155 {
     error NothingToClaim();
     error NotEnoughToClaim();
 
+    // Events to track order execution
+    event LimitOrderExecutedBeforeSwap();
+    
+    event LimitOrderExecutedAfterSwap();
+
     // OrderbookAVS integration
     OrderbookAVS public orderbookAVS;
  
@@ -81,7 +86,7 @@ contract SwapbookV2 is BaseHook, ERC1155 {
                 beforeRemoveLiquidity: false,
                 afterRemoveLiquidity: false,
                 beforeSwap: true,
-                afterSwap: false,
+                afterSwap: true,
                 beforeDonate: false,
                 afterDonate: false,
                 beforeSwapReturnDelta: false,
@@ -110,18 +115,33 @@ contract SwapbookV2 is BaseHook, ERC1155 {
         // Don't process if the swap was initiated by this hook to avoid recursion
         if (sender == address(this)) return (BaseHook.beforeSwap.selector, BeforeSwapDeltaLibrary.ZERO_DELTA, 0);
 
-        // Check if we have a better price in our order book
-        bool hasBetterPrice = checkForBetterPrice(key, params);
-        
-        if (hasBetterPrice) {
-            // Execute the swap through our order book instead of the pool
-            executeSwapThroughOrderBook(key, params);
-            // Return a non-zero delta to indicate we've handled the swap
-            return (BaseHook.beforeSwap.selector, BeforeSwapDeltaLibrary.ZERO_DELTA, 0);
+        bool executed = tryExecutingOrdersSwap(key, params);
+        if (executed) {
+            // emit an event that shows the swap was executed before swap
+            emit LimitOrderExecutedBeforeSwap();
         }
 
         // Let the swap proceed through the pool normally
         return (BaseHook.beforeSwap.selector, BeforeSwapDeltaLibrary.ZERO_DELTA, 0);
+    }
+
+    function _afterSwap(
+        address sender,
+        PoolKey calldata key,
+        SwapParams calldata params,
+        BalanceDelta,
+        bytes calldata
+    ) internal override returns (bytes4, int128) {
+        // Don't process if the swap was initiated by this hook to avoid recursion
+        if (sender == address(this)) return (this.afterSwap.selector, 0);
+
+        bool executed = tryExecutingOrdersSwap(key, params);
+        if (executed) {
+            // emit an event that shows the swap was executed before swap
+            emit LimitOrderExecutedAfterSwap();
+        }
+
+        return (this.afterSwap.selector, 0);
     }
 
     function getLowerUsableTick(
@@ -398,54 +418,78 @@ contract SwapbookV2 is BaseHook, ERC1155 {
         bool checkDirection = !params.zeroForOne;
         int24 bestTick = bestTicks[key.toId()][checkDirection];
         
-        if (bestTick == 0) {
-            return false; // No orders in our book
-        }
-        
         // Check if our best price is better than the pool price
         // For zeroForOne orders (selling token0 for token1):
         // - Higher tick = better price for the seller (more token1 per token0)
-        // - If user wants to buy token0, our zeroForOne order is better if bestTick > currentTick
         // For oneForZero orders (selling token1 for token0):
-        // - Lower tick = better price for the seller (more token0 per token1)  
-        // - If user wants to buy token1, our oneForZero order is better if bestTick < currentTick
+        // - Lower tick = better price for the seller (more token0 per token1)
         if (checkDirection) {
             // For zeroForOne orders, higher tick = better price
-            // Our best price is better if bestTick > currentTick
-            return bestTick > currentTick;
+            return bestTick <= currentTick;
         } else {
-            // For oneForZero orders, lower tick = better price  
-            // Our best price is better if bestTick < currentTick
-            return bestTick < currentTick;
+            // For oneForZero orders, lower tick = better price
+            return bestTick > currentTick;
         }
     }
 
-    function executeSwapThroughOrderBook(
+    // function executeSwapThroughOrderBook(
+    //     PoolKey calldata key,
+    //     SwapParams calldata params
+    // ) internal {
+    //     // Get the best order for the opposite direction as the swap
+    //     bool executeDirection = !params.zeroForOne;
+    //     int24 bestTick = bestTicks[key.toId()][executeDirection];
+
+    //     uint256 availableAmount = pendingOrders[key.toId()][bestTick][executeDirection];
+    //     if (availableAmount == 0) {
+    //         return; // No amount available
+    //     }
+        
+    //     // Calculate how much the user wants to swap
+    //     // params.amountSpecified is negative for exact input swaps
+    //     uint256 userSwapAmount = uint256(-params.amountSpecified);
+        
+    //     // Always execute the limit order if it has a better price
+    //     // Execute the minimum of available amount and user's swap amount
+    //     uint256 executeAmount = availableAmount < userSwapAmount ? availableAmount : userSwapAmount;
+        
+    //     executeOrder(key, bestTick, executeDirection, executeAmount);
+    // }
+
+    function tryExecutingOrdersSwap(
         PoolKey calldata key,
         SwapParams calldata params
-    ) internal {
-        // Get the best order for the opposite direction as the swap
-        bool executeDirection = !params.zeroForOne;
-        int24 bestTick = bestTicks[key.toId()][executeDirection];
+    ) internal returns (bool) {
+        // Get current pool price
+        (, int24 currentTick, , ) = poolManager.getSlot0(key.toId());
         
-        if (bestTick == 0) {
-            return; // No orders available
+        // Check if we have a better price in our order book for the opposite direction
+        bool checkDirection = !params.zeroForOne;
+        int24 bestTick = bestTicks[key.toId()][checkDirection];
+
+        if (checkDirection) {
+            // For zeroForOne orders, higher tick = better price
+            // Check if current tick >= best tick (price went up enough to execute the order)
+            if (currentTick >= bestTick) {
+                uint256 availableAmount = pendingOrders[key.toId()][bestTick][true];
+                if (availableAmount > 0) {
+                    executeOrder(key, bestTick, true, availableAmount);
+                    return true;
+                }
+            }
+        } else {
+            // For oneForZero orders, lower tick = better price
+            // Check if current tick <= best tick (price went down enough to execute the order)
+            if (currentTick <= bestTick) {
+                uint256 availableAmount = pendingOrders[key.toId()][bestTick][false];
+                if (availableAmount > 0) {
+                    executeOrder(key, bestTick, false, availableAmount);
+                    return true;
+                }
+            }
         }
-        
-        uint256 availableAmount = pendingOrders[key.toId()][bestTick][executeDirection];
-        if (availableAmount == 0) {
-            return; // No amount available
-        }
-        
-        // Calculate how much the user wants to swap
-        // params.amountSpecified is negative for exact input swaps
-        uint256 userSwapAmount = uint256(-params.amountSpecified);
-        
-        // Always execute the limit order if it has a better price
-        // Execute the minimum of available amount and user's swap amount
-        uint256 executeAmount = availableAmount < userSwapAmount ? availableAmount : userSwapAmount;
-        
-        executeOrder(key, bestTick, executeDirection, executeAmount);
+
+        return false;
     }
 
 }

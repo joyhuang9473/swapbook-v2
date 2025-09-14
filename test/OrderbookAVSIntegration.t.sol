@@ -40,7 +40,7 @@ contract OrderbookAVSIntegrationTest is Test, Deployers, ERC1155Holder {
         
         // Deploy SwapbookV2 hook
         uint160 flags = uint160(
-            Hooks.AFTER_INITIALIZE_FLAG | Hooks.BEFORE_SWAP_FLAG
+            Hooks.AFTER_INITIALIZE_FLAG | Hooks.BEFORE_SWAP_FLAG | Hooks.AFTER_SWAP_FLAG
         );
         address hookAddress = address(flags);
         deployCodeTo(
