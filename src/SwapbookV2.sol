@@ -380,7 +380,7 @@ contract SwapbookV2 is BaseHook, ERC1155 {
         if (address(orderbookAVS) != address(0)) {
             address token0 = Currency.unwrap(key.currency0);
             address token1 = Currency.unwrap(key.currency1);
-            address bestOrderUser = orderbookAVS.bestOrderUsers(token0, token1);
+            address bestOrderUser = orderbookAVS.bestOrderUsers(token0, token1, zeroForOne);
             
             if (bestOrderUser != address(0)) {
                 // Call the callback function in OrderbookAVS

@@ -79,13 +79,12 @@ contract OrderbookAVS is Ownable, IAvsLogic, IERC1155Receiver {
     mapping(address => bool) public authorizedOperators; // contracts that can transfer funds
     SwapbookV2 public swapbookV2; // Reference to SwapbookV2 contract
     
-    // Best order tracking
-    mapping(address => mapping(address => address)) public bestOrderUsers; // token0 => token1 => user
-    mapping(address => mapping(address => int24)) public bestOrderTicks; // token0 => token1 => tick
-    mapping(address => mapping(address => bool)) public bestOrderDirections; // token0 => token1 => zeroForOne
-    mapping(address => mapping(address => bool)) public bestOrderUseHigherTick; // token0 => token1 => useHigherTick
-    mapping(address => mapping(address => uint256)) public bestOrderInputAmount; // token0 => token1 => inputAmount
-    mapping(address => mapping(address => uint256)) public bestOrderOutputAmount; // token0 => token1 => outputAmount
+    // Best order tracking - now supports both bid and ask orders
+    mapping(address => mapping(address => mapping(bool => address))) public bestOrderUsers; // token0 => token1 => zeroForOne => user
+    mapping(address => mapping(address => mapping(bool => int24))) public bestOrderTicks; // token0 => token1 => zeroForOne => tick
+    mapping(address => mapping(address => mapping(bool => bool))) public bestOrderUseHigherTick; // token0 => token1 => zeroForOne => useHigherTick
+    mapping(address => mapping(address => mapping(bool => uint256))) public bestOrderInputAmount; // token0 => token1 => zeroForOne => inputAmount
+    mapping(address => mapping(address => mapping(bool => uint256))) public bestOrderOutputAmount; // token0 => token1 => zeroForOne => outputAmount
 
     // Modifiers
     modifier onlyAuthorized() {
@@ -237,12 +236,11 @@ contract OrderbookAVS is Ownable, IAvsLogic, IERC1155Receiver {
             abi.decode(taskData, (address, address, int24, bool, uint256, uint256, address, bool));
 
         // Store the best order information in OrderbookAVS
-        bestOrderUsers[token0][token1] = user;
-        bestOrderTicks[token0][token1] = newBestTick;
-        bestOrderDirections[token0][token1] = zeroForOne;
-        bestOrderUseHigherTick[token0][token1] = useHigherTick;
-        bestOrderInputAmount[token0][token1] = inputAmount;
-        bestOrderOutputAmount[token0][token1] = outputAmount;
+        bestOrderUsers[token0][token1][zeroForOne] = user;
+        bestOrderTicks[token0][token1][zeroForOne] = newBestTick;
+        bestOrderUseHigherTick[token0][token1][zeroForOne] = useHigherTick;
+        bestOrderInputAmount[token0][token1][zeroForOne] = inputAmount;
+        bestOrderOutputAmount[token0][token1][zeroForOne] = outputAmount;
 
         // Also place the order in SwapbookV2 to record bestTicks for re-routing
         if (address(swapbookV2) != address(0)) {
@@ -288,12 +286,13 @@ contract OrderbookAVS is Ownable, IAvsLogic, IERC1155Receiver {
         console.log("order.zeroForOne", order.zeroForOne);
         console.log("order.orderId", order.orderId);
         
-        // Get the best order user from storage
-        address bestOrderUser = bestOrderUsers[order.token0][order.token1];
+        // Get the best order user from storage (opposite direction)
+        bool oppositeDirection = !order.zeroForOne;
+        address bestOrderUser = bestOrderUsers[order.token0][order.token1][oppositeDirection];
         require(bestOrderUser != address(0), "No best order found");
         
         // Check if the fill amount exceeds the best order's remaining order amount
-        uint256 currentRemainingAmount = bestOrderInputAmount[order.token0][order.token1];
+        uint256 currentRemainingAmount = bestOrderInputAmount[order.token0][order.token1][oppositeDirection];
         
         if (order.zeroForOne) {
             // Incoming order is selling token0 for token1, best order is selling token1 for token0
@@ -322,8 +321,8 @@ contract OrderbookAVS is Ownable, IAvsLogic, IERC1155Receiver {
             _transferFunds(bestOrderUser, order.user, order.token1, actualFillAmount1);
 
             // Update remaining amounts: best order's input (token1) decreases, output (token0) decreases
-            bestOrderInputAmount[order.token0][order.token1] -= actualFillAmount1;
-            bestOrderOutputAmount[order.token0][order.token1] -= actualFillAmount0;
+            bestOrderInputAmount[order.token0][order.token1][oppositeDirection] -= actualFillAmount1;
+            bestOrderOutputAmount[order.token0][order.token1][oppositeDirection] -= actualFillAmount0;
         } else {
             // Incoming order is selling token1 for token0, best order is selling token0 for token1
             // Transfer token1 from incoming order user to best order user
@@ -332,8 +331,8 @@ contract OrderbookAVS is Ownable, IAvsLogic, IERC1155Receiver {
             _transferFunds(bestOrderUser, order.user, order.token0, actualFillAmount0);
 
             // Update remaining amounts: best order's input (token0) decreases, output (token1) decreases
-            bestOrderInputAmount[order.token0][order.token1] -= actualFillAmount0;
-            bestOrderOutputAmount[order.token0][order.token1] -= actualFillAmount1;
+            bestOrderInputAmount[order.token0][order.token1][oppositeDirection] -= actualFillAmount0;
+            bestOrderOutputAmount[order.token0][order.token1][oppositeDirection] -= actualFillAmount1;
         }
         
         emit OrderExecuted(order.user, order.orderId, actualFillAmount0, actualFillAmount1);
@@ -345,8 +344,9 @@ contract OrderbookAVS is Ownable, IAvsLogic, IERC1155Receiver {
         (OrderInfo memory incomingOrder, uint256 fillAmount0, uint256 fillAmount1, OrderInfo memory newBestOrder) = 
             abi.decode(taskData, (OrderInfo, uint256, uint256, OrderInfo));
         
-        // Get the best order user from storage
-        address bestOrderUser = bestOrderUsers[incomingOrder.token0][incomingOrder.token1];
+        // Get the best order user from storage (opposite direction)
+        bool oppositeDirection = !incomingOrder.zeroForOne;
+        address bestOrderUser = bestOrderUsers[incomingOrder.token0][incomingOrder.token1][oppositeDirection];
         require(bestOrderUser != address(0), "No best order found");
         
         // Direct peer-to-peer token exchange between incoming order and best order
@@ -366,25 +366,25 @@ contract OrderbookAVS is Ownable, IAvsLogic, IERC1155Receiver {
         
         // Update best order if newBestOrder is provided and valid
         if (newBestOrder.user != address(0)) {
-            bestOrderUsers[newBestOrder.token0][newBestOrder.token1] = newBestOrder.user;
-            bestOrderTicks[newBestOrder.token0][newBestOrder.token1] = newBestOrder.tick;
-            bestOrderDirections[newBestOrder.token0][newBestOrder.token1] = newBestOrder.zeroForOne;
+            bestOrderUsers[newBestOrder.token0][newBestOrder.token1][newBestOrder.zeroForOne] = newBestOrder.user;
+            bestOrderTicks[newBestOrder.token0][newBestOrder.token1][newBestOrder.zeroForOne] = newBestOrder.tick;
+            bestOrderUseHigherTick[newBestOrder.token0][newBestOrder.token1][newBestOrder.zeroForOne] = false; // Default value
 
             if (newBestOrder.zeroForOne) {
-                bestOrderInputAmount[newBestOrder.token0][newBestOrder.token1] = newBestOrder.amount1;
-                bestOrderOutputAmount[newBestOrder.token0][newBestOrder.token1] = newBestOrder.amount0;
+                bestOrderInputAmount[newBestOrder.token0][newBestOrder.token1][newBestOrder.zeroForOne] = newBestOrder.amount1;
+                bestOrderOutputAmount[newBestOrder.token0][newBestOrder.token1][newBestOrder.zeroForOne] = newBestOrder.amount0;
             } else {
-                bestOrderInputAmount[newBestOrder.token0][newBestOrder.token1] = newBestOrder.amount0;
-                bestOrderOutputAmount[newBestOrder.token0][newBestOrder.token1] = newBestOrder.amount1;
+                bestOrderInputAmount[newBestOrder.token0][newBestOrder.token1][newBestOrder.zeroForOne] = newBestOrder.amount0;
+                bestOrderOutputAmount[newBestOrder.token0][newBestOrder.token1][newBestOrder.zeroForOne] = newBestOrder.amount1;
             }
             emit BestPriceUpdated(newBestOrder.token0, newBestOrder.token1, newBestOrder.tick, newBestOrder.zeroForOne);
         } else {
             // Clear best order if no new best order provided
-            bestOrderUsers[incomingOrder.token0][incomingOrder.token1] = address(0);
-            bestOrderTicks[incomingOrder.token0][incomingOrder.token1] = 0;
-            bestOrderDirections[incomingOrder.token0][incomingOrder.token1] = false;
-            bestOrderInputAmount[incomingOrder.token0][incomingOrder.token1] = 0;
-            bestOrderOutputAmount[incomingOrder.token0][incomingOrder.token1] = 0;
+            bestOrderUsers[incomingOrder.token0][incomingOrder.token1][oppositeDirection] = address(0);
+            bestOrderTicks[incomingOrder.token0][incomingOrder.token1][oppositeDirection] = 0;
+            bestOrderUseHigherTick[incomingOrder.token0][incomingOrder.token1][oppositeDirection] = false;
+            bestOrderInputAmount[incomingOrder.token0][incomingOrder.token1][oppositeDirection] = 0;
+            bestOrderOutputAmount[incomingOrder.token0][incomingOrder.token1][oppositeDirection] = 0;
         }
         
         emit OrderExecuted(incomingOrder.user, incomingOrder.orderId, fillAmount0, fillAmount1);
@@ -436,10 +436,10 @@ contract OrderbookAVS is Ownable, IAvsLogic, IERC1155Receiver {
         
         // Get the actual tick used by SwapbookV2 for execution
         // We need to use the same tick that SwapbookV2 used, not our stored tick
-        bool useHigherTick = bestOrderUseHigherTick[token0][token1];
+        bool useHigherTick = bestOrderUseHigherTick[token0][token1][zeroForOne];
         int24 executionTick = useHigherTick 
-            ? swapbookV2.getHigherUsableTick(bestOrderTicks[token0][token1], 60)
-            : swapbookV2.getLowerUsableTick(bestOrderTicks[token0][token1], 60);
+            ? swapbookV2.getHigherUsableTick(bestOrderTicks[token0][token1][zeroForOne], 60)
+            : swapbookV2.getLowerUsableTick(bestOrderTicks[token0][token1][zeroForOne], 60);
 
         // Redeem the token by calling redeem function in SwapbookV2
         // Use the same tick that SwapbookV2 used for execution
@@ -457,7 +457,7 @@ contract OrderbookAVS is Ownable, IAvsLogic, IERC1155Receiver {
         );
 
         // Check if the output amount is greater than the minimum output amount
-        if (outputAmount < bestOrderOutputAmount[token0][token1]) {
+        if (outputAmount < bestOrderOutputAmount[token0][token1][zeroForOne]) {
             revert("Output amount is less than the minimum output amount");
         }
 
@@ -516,11 +516,12 @@ contract OrderbookAVS is Ownable, IAvsLogic, IERC1155Receiver {
         
         // Only clear the best order if it's completely filled (no remaining amount)
         if (swapbookV2.pendingOrders(key.toId(), currentBestTick, zeroForOne) == 0) {
-            bestOrderUsers[token0][token1] = address(0);
-            bestOrderTicks[token0][token1] = 0;
-            bestOrderDirections[token0][token1] = false;
-            bestOrderInputAmount[token0][token1] = 0;
-            emit BestPriceUpdated(token0, token1, 0, false);
+            bestOrderUsers[token0][token1][zeroForOne] = address(0);
+            bestOrderTicks[token0][token1][zeroForOne] = 0;
+            bestOrderUseHigherTick[token0][token1][zeroForOne] = false;
+            bestOrderInputAmount[token0][token1][zeroForOne] = 0;
+            bestOrderOutputAmount[token0][token1][zeroForOne] = 0;
+            emit BestPriceUpdated(token0, token1, 0, zeroForOne);
         }
         
         emit OrderExecuted(bestOrderUser, 0, fillAmount0, fillAmount1);
