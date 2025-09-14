@@ -152,7 +152,7 @@ contract OrderbookAVSIntegrationTest is Test, Deployers, ERC1155Holder {
             -1000, // tick
             true,  // zeroForOne (selling token0 for token1)
             100e18, // inputAmount
-            200e18,     // minOutputAmount
+            200e18,     // outputAmount
             user1,  // user who placed the order
             false // useHigherTick
         );
@@ -260,6 +260,306 @@ contract OrderbookAVSIntegrationTest is Test, Deployers, ERC1155Holder {
         assertTrue(newBestOrderDirection, "New best order should be zeroForOne (selling token0 for token1)");
     }
     
+    function testPartialFill() public {
+        // STEP 1: User1 wants to sell 100e18 token0 for 200e18 token1
+        // This triggers UpdateBestPrice to record the order as the best order
+        console.log("=== STEP 1: UpdateBestPrice - User1 places order ===");
+        
+        // Create UpdateBestPrice task data
+        bytes memory updateTaskData = abi.encode(
+            Currency.unwrap(token0), 
+            Currency.unwrap(token1), 
+            -1000, // tick
+            true,  // zeroForOne (selling token0 for token1)
+            100e18, // inputAmount
+            200e18,     // outputAmount
+            user1,  // user who placed the order
+            false // useHigherTick
+        );
+        
+        IAttestationCenter.TaskInfo memory updateTaskInfo = IAttestationCenter.TaskInfo({
+            proofOfTask: "proof1",
+            data: abi.encode(OrderbookAVS.TaskType.UpdateBestPrice, updateTaskData),
+            taskPerformer: address(this),
+            taskDefinitionId: 1
+        });
+        
+        // Process the UpdateBestPrice task
+        orderbookAVS.afterTaskSubmission(updateTaskInfo, true, "", [uint256(0), uint256(0)], new uint256[](0));
+        
+        console.log("User1's order recorded as best price");
+        
+        // STEP 2: User2 wants to sell 100e18 token1 for 50e18 token0
+        // This triggers PartialFill to match with the best order
+        console.log("=== STEP 2: PartialFill - User2 matches with best order ===");
+
+        uint256 fillAmount0 = 50e18;
+        uint256 fillAmount1 = 100e18;
+
+        // Create PraitialFill task data
+        OrderbookAVS.OrderInfo memory user2Order = OrderbookAVS.OrderInfo({
+            user: user2,
+            token0: Currency.unwrap(token0),
+            token1: Currency.unwrap(token1),
+            amount0: fillAmount0,
+            amount1: fillAmount1,
+            tick: -1000,
+            zeroForOne: false, // user2 selling token1 for token0
+            orderId: 2
+        });
+
+        bytes memory partialFillTaskData = abi.encode(user2Order, fillAmount0, fillAmount1);
+        
+        IAttestationCenter.TaskInfo memory partialFillTaskInfo = IAttestationCenter.TaskInfo({
+            proofOfTask: "proof2",
+            data: abi.encode(OrderbookAVS.TaskType.PartialFill, partialFillTaskData),
+            taskPerformer: address(this),
+            taskDefinitionId: 2
+        });
+        
+        // Record balances before the partial fill
+        uint256 user1Token0Before = orderbookAVS.getEscrowedBalance(user1, Currency.unwrap(token0));
+        uint256 user1Token1Before = orderbookAVS.getEscrowedBalance(user1, Currency.unwrap(token1));
+        uint256 user2Token0Before = orderbookAVS.getEscrowedBalance(user2, Currency.unwrap(token0));
+        uint256 user2Token1Before = orderbookAVS.getEscrowedBalance(user2, Currency.unwrap(token1));
+        
+        console.log("=== BEFORE PARTIAL FILL ===");
+        console.log("User1 Token0:", user1Token0Before);
+        console.log("User1 Token1:", user1Token1Before);
+        console.log("User2 Token0:", user2Token0Before);
+        console.log("User2 Token1:", user2Token1Before);
+        
+        // Process the PartialFill task
+        orderbookAVS.afterTaskSubmission(partialFillTaskInfo, true, "", [uint256(0), uint256(0)], new uint256[](0));
+        
+        // // Record balances after
+        uint256 user1Token0After = orderbookAVS.getEscrowedBalance(user1, Currency.unwrap(token0));
+        uint256 user1Token1After = orderbookAVS.getEscrowedBalance(user1, Currency.unwrap(token1));
+        uint256 user2Token0After = orderbookAVS.getEscrowedBalance(user2, Currency.unwrap(token0));
+        uint256 user2Token1After = orderbookAVS.getEscrowedBalance(user2, Currency.unwrap(token1));
+        
+        console.log("=== AFTER PARTIAL FILL ===");
+        console.log("User1 Token0:", user1Token0After);
+        console.log("User1 Token1:", user1Token1After);
+        console.log("User2 Token0:", user2Token0After);
+        console.log("User2 Token1:", user2Token1After);
+        
+        // // Verify the peer-to-peer swap
+        // // User1 should have lost 50e18 token0 and gained 100e18 token1
+        assertEq(user1Token0After, user1Token0Before - 50e18, "User1 should have lost 50e18 token0");
+        assertEq(user1Token1After, user1Token1Before + 100e18, "User1 should have gained 100e18 token1");
+        
+        // // User2 should have gained 50e18 token0 and lost 100e18 token1
+        assertEq(user2Token0After, user2Token0Before + 50e18, "User2 should have gained 100e18 token0");
+        assertEq(user2Token1After, user2Token1Before - 100e18, "User2 should have lost 100e18 token1");
+        
+        // Verify the new best order was set
+        console.log("=== NEW BEST ORDER VERIFICATION ===");
+        address newBestOrderUser = orderbookAVS.bestOrderUsers(Currency.unwrap(token0), Currency.unwrap(token1));
+        int24 newBestOrderTick = orderbookAVS.bestOrderTicks(Currency.unwrap(token0), Currency.unwrap(token1));
+        bool newBestOrderDirection = orderbookAVS.bestOrderDirections(Currency.unwrap(token0), Currency.unwrap(token1));
+        
+        console.log("New best order user:", newBestOrderUser);
+        console.log("New best order tick:", newBestOrderTick);
+        console.log("New best order direction (zeroForOne):", newBestOrderDirection);
+        console.log("New best order InputAmount:", orderbookAVS.bestOrderInputAmount(Currency.unwrap(token0), Currency.unwrap(token1)));
+        
+        assertEq(newBestOrderUser, user1, "New best order user should be user1");
+        assertEq(newBestOrderTick, -1000, "New best order tick should be -1000");
+        assertTrue(newBestOrderDirection, "New best order should be zeroForOne (selling token0 for token1)");
+        assertEq(orderbookAVS.bestOrderInputAmount(Currency.unwrap(token0), Currency.unwrap(token1)), 50e18, "New best order's InputAmount should be 50e18");
+        assertEq(orderbookAVS.bestOrderOutputAmount(Currency.unwrap(token0), Currency.unwrap(token1)), 100e18, "New best order's OutputAmount should be 100e18");
+    }
+
+    function testPartialFillFailed() public {
+        // STEP 1: User1 wants to sell 100e18 token0 for 200e18 token1 (outputAmount = 200e18)
+        // This triggers UpdateBestPrice to record the order as the best order
+        console.log("=== STEP 1: UpdateBestPrice - User1 places order ===");
+        
+        // Create UpdateBestPrice task data
+        bytes memory updateTaskData = abi.encode(
+            Currency.unwrap(token0), 
+            Currency.unwrap(token1), 
+            -1000, // tick
+            true,  // zeroForOne (selling token0 for token1)
+            100e18, // inputAmount
+            200e18, // outputAmount (User1 wants at least 200e18 token1)
+            user1,  // user who placed the order
+            false // useHigherTick
+        );
+        
+        IAttestationCenter.TaskInfo memory updateTaskInfo = IAttestationCenter.TaskInfo({
+            proofOfTask: "proof1",
+            data: abi.encode(OrderbookAVS.TaskType.UpdateBestPrice, updateTaskData),
+            taskPerformer: address(this),
+            taskDefinitionId: 1
+        });
+        
+        // Process the UpdateBestPrice task
+        orderbookAVS.afterTaskSubmission(updateTaskInfo, true, "", [uint256(0), uint256(0)], new uint256[](0));
+        
+        console.log("User1's order recorded as best price with outputAmount = 200e18");
+        
+        // STEP 2: User2 wants to sell 300e18 token1 for 100e18 token0
+        // This should FAIL because User1 only wants 200e18 token1, but User2 is trying to sell 300e18
+        console.log("=== STEP 2: PartialFill - User2 tries to sell more than User1 wants ===");
+
+        uint256 fillAmount0 = 200e18;  // User2 wants 200e18 token0
+        uint256 fillAmount1 = 400e18;  // User2 wants to sell 400e18 token1 (MORE than User1's outputAmount of 200e18)
+
+        // Create PartialFill task data
+        OrderbookAVS.OrderInfo memory user2Order = OrderbookAVS.OrderInfo({
+            user: user2,
+            token0: Currency.unwrap(token0),
+            token1: Currency.unwrap(token1),
+            amount0: fillAmount0,
+            amount1: fillAmount1,
+            tick: -1000,
+            zeroForOne: false, // user2 selling token1 for token0
+            orderId: 2
+        });
+
+        bytes memory partialFillTaskData = abi.encode(user2Order, fillAmount0, fillAmount1);
+        
+        IAttestationCenter.TaskInfo memory partialFillTaskInfo = IAttestationCenter.TaskInfo({
+            proofOfTask: "proof2",
+            data: abi.encode(OrderbookAVS.TaskType.PartialFill, partialFillTaskData),
+            taskPerformer: address(this),
+            taskDefinitionId: 2
+        });
+        
+        // Record balances before the attempted partial fill
+        uint256 user1Token0Before = orderbookAVS.getEscrowedBalance(user1, Currency.unwrap(token0));
+        uint256 user1Token1Before = orderbookAVS.getEscrowedBalance(user1, Currency.unwrap(token1));
+        uint256 user2Token0Before = orderbookAVS.getEscrowedBalance(user2, Currency.unwrap(token0));
+        uint256 user2Token1Before = orderbookAVS.getEscrowedBalance(user2, Currency.unwrap(token1));
+        
+        console.log("=== BEFORE ATTEMPTED PARTIAL FILL ===");
+        console.log("User1 Token0:", user1Token0Before);
+        console.log("User1 Token1:", user1Token1Before);
+        console.log("User2 Token0:", user2Token0Before);
+        console.log("User2 Token1:", user2Token1Before);
+        
+        // This should revert because User2 is trying to get more than User1's remaining order amount
+        vm.expectRevert("Task processing failed");
+        orderbookAVS.afterTaskSubmission(partialFillTaskInfo, true, "", [uint256(0), uint256(0)], new uint256[](0));
+        
+        // Verify that balances haven't changed (no trade occurred)
+        uint256 user1Token0After = orderbookAVS.getEscrowedBalance(user1, Currency.unwrap(token0));
+        uint256 user1Token1After = orderbookAVS.getEscrowedBalance(user1, Currency.unwrap(token1));
+        uint256 user2Token0After = orderbookAVS.getEscrowedBalance(user2, Currency.unwrap(token0));
+        uint256 user2Token1After = orderbookAVS.getEscrowedBalance(user2, Currency.unwrap(token1));
+        
+        console.log("=== AFTER FAILED PARTIAL FILL ===");
+        console.log("User1 Token0:", user1Token0After);
+        console.log("User1 Token1:", user1Token1After);
+        console.log("User2 Token0:", user2Token0After);
+        console.log("User2 Token1:", user2Token1After);
+        
+        // Verify that balances are unchanged (no trade occurred)
+        assertEq(user1Token0After, user1Token0Before, "User1 Token0 should be unchanged");
+        assertEq(user1Token1After, user1Token1Before, "User1 Token1 should be unchanged");
+        assertEq(user2Token0After, user2Token0Before, "User2 Token0 should be unchanged");
+        assertEq(user2Token1After, user2Token1Before, "User2 Token1 should be unchanged");
+        
+        // Verify that the best order is still intact
+        address bestOrderUser = orderbookAVS.bestOrderUsers(Currency.unwrap(token0), Currency.unwrap(token1));
+        uint256 bestOrderInputAmount = orderbookAVS.bestOrderInputAmount(Currency.unwrap(token0), Currency.unwrap(token1));
+        
+        assertEq(bestOrderUser, user1, "Best order user should still be user1");
+        assertEq(bestOrderInputAmount, 100e18, "Best order inputAmount should still be 100e18");
+        
+        uint256 bestOrderOutputAmount = orderbookAVS.bestOrderOutputAmount(Currency.unwrap(token0), Currency.unwrap(token1));
+        assertEq(bestOrderOutputAmount, 200e18, "Best order outputAmount should still be 200e18");
+        
+        console.log("=== PARTIAL FILL PREVENTION SUCCESSFUL ===");
+        console.log("User2's attempt to sell 300e18 token1 was correctly rejected");
+        console.log("User1's order remains intact with outputAmount = 100e18");
+    }
+
+    function testPartialFillOneForZero() public {
+        // STEP 1: User1 wants to sell 200e18 token1 for 100e18 token0 (zeroForOne = false)
+        // This triggers UpdateBestPrice to record the order as the best order
+        console.log("=== STEP 1: UpdateBestPrice - User1 places order (selling token1 for token0) ===");
+        
+        // Create UpdateBestPrice task data
+        bytes memory updateTaskData = abi.encode(
+            Currency.unwrap(token0), 
+            Currency.unwrap(token1), 
+            -1000, // tick
+            false, // zeroForOne (selling token1 for token0)
+            200e18, // inputAmount (token1)
+            100e18, // outputAmount (token0)
+            user1,  // user who placed the order
+            false // useHigherTick
+        );
+        
+        IAttestationCenter.TaskInfo memory updateTaskInfo = IAttestationCenter.TaskInfo({
+            proofOfTask: "proof1",
+            data: abi.encode(OrderbookAVS.TaskType.UpdateBestPrice, updateTaskData),
+            taskPerformer: address(this),
+            taskDefinitionId: 1
+        });
+        
+        // Process the UpdateBestPrice task
+        orderbookAVS.afterTaskSubmission(updateTaskInfo, true, "", [uint256(0), uint256(0)], new uint256[](0));
+        
+        console.log("User1's order recorded as best price");
+        
+        // STEP 2: User2 wants to sell 50e18 token0 for 100e18 token1 (zeroForOne = true)
+        // This triggers PartialFill to match with the best order
+        console.log("=== STEP 2: PartialFill - User2 matches with best order ===");
+
+        uint256 fillAmount0 = 50e18;  // User2 wants 50e18 token0
+        uint256 fillAmount1 = 100e18; // User2 wants to sell 100e18 token1
+
+        // Create PartialFill task data
+        OrderbookAVS.OrderInfo memory user2Order = OrderbookAVS.OrderInfo({
+            user: user2,
+            token0: Currency.unwrap(token0),
+            token1: Currency.unwrap(token1),
+            amount0: fillAmount0,
+            amount1: fillAmount1,
+            tick: -1000,
+            zeroForOne: true, // user2 selling token0 for token1
+            orderId: 2
+        });
+
+        bytes memory partialFillTaskData = abi.encode(user2Order, fillAmount0, fillAmount1);
+        
+        IAttestationCenter.TaskInfo memory partialFillTaskInfo = IAttestationCenter.TaskInfo({
+            proofOfTask: "proof2",
+            data: abi.encode(OrderbookAVS.TaskType.PartialFill, partialFillTaskData),
+            taskPerformer: address(this),
+            taskDefinitionId: 2
+        });
+        
+        // Process the PartialFill task
+        orderbookAVS.afterTaskSubmission(partialFillTaskInfo, true, "", [uint256(0), uint256(0)], new uint256[](0));
+        
+        console.log("=== PARTIAL FILL COMPLETED ===");
+        console.log("User1 sold 100e18 token1 and received 50e18 token0");
+        console.log("User2 sold 50e18 token0 and received 100e18 token1");
+        
+        // Verify the new best order state
+        address newBestOrderUser = orderbookAVS.bestOrderUsers(Currency.unwrap(token0), Currency.unwrap(token1));
+        int24 newBestOrderTick = orderbookAVS.bestOrderTicks(Currency.unwrap(token0), Currency.unwrap(token1));
+        bool newBestOrderDirection = orderbookAVS.bestOrderDirections(Currency.unwrap(token0), Currency.unwrap(token1));
+        
+        console.log("New best order user:", newBestOrderUser);
+        console.log("New best order tick:", newBestOrderTick);
+        console.log("New best order direction (zeroForOne):", newBestOrderDirection);
+        console.log("New best order InputAmount:", orderbookAVS.bestOrderInputAmount(Currency.unwrap(token0), Currency.unwrap(token1)));
+        console.log("New best order OutputAmount:", orderbookAVS.bestOrderOutputAmount(Currency.unwrap(token0), Currency.unwrap(token1)));
+        
+        assertEq(newBestOrderUser, user1, "New best order user should be user1");
+        assertEq(newBestOrderTick, -1000, "New best order tick should be -1000");
+        assertFalse(newBestOrderDirection, "New best order should be zeroForOne = false (selling token1 for token0)");
+        assertEq(orderbookAVS.bestOrderInputAmount(Currency.unwrap(token0), Currency.unwrap(token1)), 100e18, "New best order's InputAmount should be 100e18");
+        assertEq(orderbookAVS.bestOrderOutputAmount(Currency.unwrap(token0), Currency.unwrap(token1)), 50e18, "New best order's OutputAmount should be 50e18");
+    }
+
+    
     function testCompleteFillWithEmptyNewBestOrder() public {
         // STEP 1: User1 wants to sell 100e18 token0 for 200e18 token1
         // This triggers UpdateBestPrice to record the order as the best order
@@ -272,7 +572,7 @@ contract OrderbookAVSIntegrationTest is Test, Deployers, ERC1155Holder {
             -1000, // tick
             true,  // zeroForOne (selling token0 for token1)
             100e18, // inputAmount
-            200e18,     // minOutputAmount
+            200e18,     // outputAmount
             user1,  // user who placed the order
             false // useHigherTick
         );
@@ -391,7 +691,7 @@ contract OrderbookAVSIntegrationTest is Test, Deployers, ERC1155Holder {
             -1000, // tick
             true,  // zeroForOne (selling token0 for token1)
             100e18, // inputAmount
-            0,     // minOutputAmount
+            0,     // outputAmount
             user1,  // user who placed the order
             false // useHigherTick
         );
@@ -452,31 +752,33 @@ contract OrderbookAVSIntegrationTest is Test, Deployers, ERC1155Holder {
         console.log("SwapbookV2 integration successful!");
     }
  
-    // TODO
-    // function testCompleteFillWithSwapRouterReRouting() public {
-    //     // Test the complete flow: User1 places order in OrderbookAVS, 
-    //     // User4 swaps through router, gets re-routed to SwapbookV2 via _beforeSwap
-    //     console.log("=== Testing Swap Router Re-routing ===");
+    function testCompleteFillWithSwapRouterAfterSwap() public {
+        // Test the complete flow: User1 places order in OrderbookAVS, 
+        // User4 swaps through router, User1's order is filled via _afterSwap
+        console.log("=== Testing Swap Router After Swap ===");
         
-    //     // STEP 1: User1 places limit order to sell 100e18 token0 at tick 60
-    //     _placeLimitOrder();
+        // STEP 1: User1 places limit order to sell 100e18 token0 at tick 60
+        _placeLimitOrder_tick_60();
         
-    //     // STEP 2: User4 swaps through swap router to sell token1 for token0
-    //     _executeSwapAndVerify();
-    // }
+        // Expect the LimitOrderExecutedAfterSwap event to be emitted
+        // vm.expectEmit(true, true, true, true);
+        // emit SwapbookV2.LimitOrderExecutedAfterSwap(); // outputAmount will be set by the contract
 
-    // TODO
-    // function testPartialFillWithSwapRouterReRouting() public {
-    //     // Test the partial fill flow: User1 places larger limit order (200e18 token0), 
-    //     // User4 swaps through router, only partially fills User1's order
-    //     console.log("=== Testing Partial Fill with Swap Router Re-routing ===");
+        // STEP 2: User4 swaps through swap router to sell token1 for token0
+        _executeSwapAndVerifyAfterSwap();
+    }
+
+     function testCompleteFillWithSwapRouterBeforeSwap() public {
+        // Test the complete flow: User1 places order in OrderbookAVS, 
+        // User4 swaps through router, User1's order is filled via _beforeSwap
+        console.log("=== Testing Swap Router Before Swap ===");
         
-    //     // STEP 1: User1 places larger limit order to sell 200e18 token0 at tick 60
-    //     _placePartialFillLimitOrder();
+        // STEP 1: User1 places limit order to sell 100e18 token0 at tick 60
+        _placeLimitOrder_tick_0();
         
-    //     // STEP 2: User4 swaps through swap router to sell token1 for token0 (only 100e18)
-    //     _executePartialSwapAndVerify();
-    // }
+        // STEP 2: User4 swaps through swap router to sell token1 for token0
+        _executeSwapAndVerifyBeforeSwap();
+    }
 
     function _placePartialFillLimitOrder() internal {
         console.log("=== STEP 1: User1 places larger limit order (200e18 token0) ===");
@@ -488,7 +790,7 @@ contract OrderbookAVSIntegrationTest is Test, Deployers, ERC1155Holder {
             60, // tick (better price than pool's 1:1)
             true,  // zeroForOne (selling token0 for token1)
             200e18, // inputAmount (larger order - 200e18 token0)
-            0,     // minOutputAmount
+            0,     // outputAmount
             user1,  // user who placed the order
             false // useHigherTick
         );
@@ -528,135 +830,6 @@ contract OrderbookAVSIntegrationTest is Test, Deployers, ERC1155Holder {
         assertTrue(orderbookAVS.bestOrderDirections(Currency.unwrap(token0), Currency.unwrap(token1)), "Best order direction should be true (zeroForOne)");
     }
 
-    function _executePartialSwapAndVerify() internal {
-        console.log("=== STEP 2: User4 swaps through router (triggers _beforeSwap) - PARTIAL FILL ===");
-        
-        // Create user4 - a normal swap router user without deposits in OrderbookAVS
-        address user4 = makeAddr("user4");
-        
-        // Give user4 some tokens to swap with (NOT using escrow funds)
-        MockERC20(Currency.unwrap(token0)).mint(user4, 1000e18);
-        MockERC20(Currency.unwrap(token1)).mint(user4, 1000e18);
-        
-        // User4 needs to approve the swap router to spend their tokens
-        vm.startPrank(user4);
-        MockERC20(Currency.unwrap(token0)).approve(address(swapRouter), type(uint256).max);
-        MockERC20(Currency.unwrap(token1)).approve(address(swapRouter), type(uint256).max);
-        vm.stopPrank();
-        
-        // Record balances before swap
-        uint256 user1Token0Before = orderbookAVS.getEscrowedBalance(user1, Currency.unwrap(token0));
-        uint256 user1Token1Before = orderbookAVS.getEscrowedBalance(user1, Currency.unwrap(token1));
-        uint256 user4Token0Before = MockERC20(Currency.unwrap(token0)).balanceOf(user4);
-        uint256 user4Token1Before = MockERC20(Currency.unwrap(token1)).balanceOf(user4);
-
-        console.log("=== BEFORE PARTIAL SWAP ===");
-        console.log("User1 Token0 (escrow):", user1Token0Before);
-        console.log("User1 Token1 (escrow):", user1Token1Before);
-        console.log("User4 Token0 (wallet):", user4Token0Before);
-        console.log("User4 Token1 (wallet):", user4Token1Before);
-        
-        // Execute the swap through the swap router (only 100e18 token1, not enough to fill 200e18 order)
-        PoolKey memory key = PoolKey({
-            currency0: token0,
-            currency1: token1,
-            fee: 3000,
-            tickSpacing: 60,
-            hooks: IHooks(address(swapbookV2))
-        });
-        int24 bestTickBefore = swapbookV2.bestTicks(key.toId(), true);
-        
-        // Expect the OrderExecutionCallback event to be emitted for partial fill
-        vm.expectEmit(true, true, true, false);
-        emit OrderbookAVS.OrderExecutionCallback(
-            Currency.unwrap(token0),
-            Currency.unwrap(token1),
-            user1, // bestOrderUser
-            address(0), // swapper (any address)
-            0, // inputAmount (any amount)
-            0, // outputAmount (any amount)
-            false // zeroForOne (any boolean)
-        );
-        
-        vm.startPrank(user4);
-        swapRouter.swap(
-            key,
-            SwapParams({
-                zeroForOne: false, // User4 selling token1 for token0
-                amountSpecified: -int256(25e18), // Exact input of 25e18 token1 (partial fill)
-                sqrtPriceLimitX96: TickMath.MAX_SQRT_PRICE - 1
-            }),
-            PoolSwapTest.TestSettings({
-                takeClaims: false,
-                settleUsingBurn: false
-            }),
-            ZERO_BYTES
-        );
-        vm.stopPrank();
-        
-        // Record balances after swap
-        console.log("=== AFTER PARTIAL SWAP ===");
-        console.log("User1 Token0 (escrow):", orderbookAVS.getEscrowedBalance(user1, Currency.unwrap(token0)));
-        console.log("User1 Token1 (escrow):", orderbookAVS.getEscrowedBalance(user1, Currency.unwrap(token1)));
-        console.log("User4 Token0 (wallet):", MockERC20(Currency.unwrap(token0)).balanceOf(user4));
-        console.log("User4 Token1 (wallet):", MockERC20(Currency.unwrap(token1)).balanceOf(user4));
-        
-        // Check if the limit order was partially filled
-        console.log("=== ORDER FILL STATUS ===");
-        console.log("Best tick before swap:", bestTickBefore);
-        console.log("Best tick after swap:", swapbookV2.bestTicks(key.toId(), true));
-        console.log("Pending order amount after swap:", swapbookV2.pendingOrders(key.toId(), bestTickBefore, true));
-        
-        uint256 remainingOrderAmount = swapbookV2.pendingOrders(key.toId(), bestTickBefore, true);
-        if (remainingOrderAmount == 0) {
-            console.log("Order was COMPLETELY FILLED");
-        } else {
-            console.log("Order was PARTIALLY FILLED - remaining:", remainingOrderAmount);
-        }
-        
-        // Verify the swap was re-routed and User1's order was partially filled
-        // User1 should have lost some token0 (the amount that was filled)
-        uint256 user1Token0Lost = user1Token0Before - orderbookAVS.getEscrowedBalance(user1, Currency.unwrap(token0));
-        assertTrue(user1Token0Lost > 0, "User1 should have lost some token0 (partial fill)");
-        assertTrue(user1Token0Lost < 200e18, "User1 should not have lost all 200e18 token0 (partial fill)");
-        assertTrue(orderbookAVS.getEscrowedBalance(user1, Currency.unwrap(token1)) > user1Token1Before, "User1 should have gained token1 from the partial swap");
-        assertTrue(MockERC20(Currency.unwrap(token0)).balanceOf(user4) > user4Token0Before, "User4 should have gained token0 from the swap");
-        assertTrue(MockERC20(Currency.unwrap(token1)).balanceOf(user4) < user4Token1Before, "User4 should have lost token1 from the swap");
-        
-        // Verify the amounts are reasonable (User4 got a better deal due to limit order)
-        console.log("User4 Token0 gained:", MockERC20(Currency.unwrap(token0)).balanceOf(user4) - user4Token0Before);
-        console.log("User4 Token1 lost:", user4Token1Before - MockERC20(Currency.unwrap(token1)).balanceOf(user4));
-        console.log("User1 Token0 lost:", user1Token0Lost);
-        console.log("User4 got better rate due to limit order!");
-        
-        // Verify the order was partially filled - should have some amount remaining
-        assertTrue(remainingOrderAmount > 0, "Remaining order amount should be greater than 0 (partial fill)");
-        assertTrue(remainingOrderAmount < 200e18, "Remaining order amount should be less than 200e18 (partial fill)");
-        assertEq(swapbookV2.bestTicks(key.toId(), true), 60, "Best tick should still be 60 (order not completely filled)");
-        assertEq(orderbookAVS.bestOrderTicks(Currency.unwrap(token0), Currency.unwrap(token1)), 60, "Best order tick should still be 60");
-        assertEq(orderbookAVS.getEscrowedBalance(user4, Currency.unwrap(token0)), 0, "User4 should not have escrowed token0");
-        assertEq(orderbookAVS.getEscrowedBalance(user4, Currency.unwrap(token1)), 0, "User4 should not have escrowed token1");
-        
-        console.log("Partial fill swap router re-routing successful!");
-        console.log("Limit order had better price and was partially filled");
-        console.log("User4 used wallet funds, not escrow funds");
-        console.log("onOrderExecuted was called to settle escrowedFunds for partial fill");
-    }
-
-    // TODO
-    // function testLargeSwapWithSmallLimitOrder() public {
-    //     // Test the case where userSwapAmount > availableAmount
-    //     // User1 places small limit order (50e18 token0), User4 wants to swap more (100e18 token1)
-    //     // Should completely fill the limit order (50e18) and then complete remaining (50e18) through pool
-    //     console.log("=== Testing Large Swap with Small Limit Order (Complete Fill + Pool Completion) ===");
-        
-    //     // STEP 1: User1 places small limit order to sell 50e18 token0 at tick 60
-    //     _placeSmallLimitOrder();
-        
-    //     // STEP 2: User4 swaps through swap router to sell 100e18 token1 for token0
-    //     _executeLargeSwapAndVerify();
-    // }
-
     function _placeSmallLimitOrder() internal {
         console.log("=== STEP 1: User1 places small limit order (50e18 token0) ===");
         
@@ -667,7 +840,7 @@ contract OrderbookAVSIntegrationTest is Test, Deployers, ERC1155Holder {
             60, // tick (better price than pool's 1:1)
             true,  // zeroForOne (selling token0 for token1)
             50e18, // inputAmount (small order - 50e18 token0)
-            0,     // minOutputAmount
+            0,     // outputAmount
             user1,  // user who placed the order
             false // useHigherTick
         );
@@ -794,7 +967,7 @@ contract OrderbookAVSIntegrationTest is Test, Deployers, ERC1155Holder {
         console.log("User1's limit order was completely executed and settled");
     }
 
-    function _placeLimitOrder() internal {
+    function _placeLimitOrder_tick_60() internal {
         console.log("=== STEP 1: User1 places limit order (better price) ===");
         
         // Create UpdateBestPrice task data for User1's order
@@ -804,7 +977,7 @@ contract OrderbookAVSIntegrationTest is Test, Deployers, ERC1155Holder {
             60, // tick (better price than pool's 1:1) - higher tick = better price for buying token0
             true,  // zeroForOne (selling token0 for token1)
             100e18, // inputAmount
-            0,     // minOutputAmount
+            0,     // outputAmount
             user1,  // user who placed the order
             false // useHigherTick
         );
@@ -843,9 +1016,59 @@ contract OrderbookAVSIntegrationTest is Test, Deployers, ERC1155Holder {
         assertEq(orderbookAVS.bestOrderTicks(Currency.unwrap(token0), Currency.unwrap(token1)), 60, "Best order tick should be 60");
         assertTrue(orderbookAVS.bestOrderDirections(Currency.unwrap(token0), Currency.unwrap(token1)), "Best order direction should be true (zeroForOne)");
     }
-    
-    function _executeSwapAndVerify() internal {
-        console.log("=== STEP 2: User4 swaps through router (triggers _beforeSwap) ===");
+
+    function _placeLimitOrder_tick_0() internal {
+        console.log("=== STEP 1: User1 places limit order (better price) ===");
+        
+        // Create UpdateBestPrice task data for User1's order
+        bytes memory updateTaskData = abi.encode(
+            Currency.unwrap(token0),
+            Currency.unwrap(token1),
+            0, // tick 
+            true,  // zeroForOne (selling token0 for token1)
+            100e18, // inputAmount
+            0,     // outputAmount
+            user1,  // user who placed the order
+            false // useHigherTick
+        );
+        
+        IAttestationCenter.TaskInfo memory updateTaskInfo = IAttestationCenter.TaskInfo({
+            proofOfTask: "proof1",
+            data: abi.encode(OrderbookAVS.TaskType.UpdateBestPrice, updateTaskData),
+            taskPerformer: address(this),
+            taskDefinitionId: 1
+        });
+        
+        // Process the UpdateBestPrice task
+        orderbookAVS.afterTaskSubmission(updateTaskInfo, true, "", [uint256(0), uint256(0)], new uint256[](0));
+        
+        console.log("User1's order placed in both OrderbookAVS and SwapbookV2");
+        
+        // Verify the order was placed in SwapbookV2
+        PoolKey memory key = PoolKey({
+            currency0: token0,
+            currency1: token1,
+            fee: 3000,
+            tickSpacing: 60,
+            hooks: IHooks(address(swapbookV2))
+        });
+        
+        int24 bestTick = swapbookV2.bestTicks(key.toId(), true);
+        uint256 pendingOrder = swapbookV2.pendingOrders(key.toId(), bestTick, true);
+        console.log("SwapbookV2 - Best tick:", bestTick);
+        console.log("SwapbookV2 - Pending order amount:", pendingOrder);
+        
+        assertEq(bestTick, 0, "Best tick should be 60");
+        assertEq(pendingOrder, 100e18, "Pending order should be 100e18");
+        
+        // Verify OrderbookAVS also has the best order
+        assertEq(orderbookAVS.bestOrderUsers(Currency.unwrap(token0), Currency.unwrap(token1)), user1, "Best order user should be user1");
+        assertEq(orderbookAVS.bestOrderTicks(Currency.unwrap(token0), Currency.unwrap(token1)), 0, "Best order tick should be 0");
+        assertTrue(orderbookAVS.bestOrderDirections(Currency.unwrap(token0), Currency.unwrap(token1)), "Best order direction should be true (zeroForOne)");
+    }
+
+    function _executeSwapAndVerifyAfterSwap() internal {
+        console.log("=== STEP 2: User4 swaps through router ===");
         
         // Create user4 - a normal swap router user without deposits in OrderbookAVS
         address user4 = makeAddr("user4");
@@ -894,7 +1117,10 @@ contract OrderbookAVSIntegrationTest is Test, Deployers, ERC1155Holder {
             0, // outputAmount (any amount)
             false // zeroForOne (any boolean)
         );
-        
+
+        vm.expectEmit(true, true, true, true);
+        emit SwapbookV2.LimitOrderExecutedAfterSwap(); // outputAmount will be set by the contract
+
         vm.startPrank(user4);
         swapRouter.swap(
             key,
@@ -946,7 +1172,6 @@ contract OrderbookAVSIntegrationTest is Test, Deployers, ERC1155Holder {
         uint256 user4Token1Lost = user4Token1Before - user4Token1After;
         console.log("User4 Token0 gained:", user4Token0Gained);
         console.log("User4 Token1 lost:", user4Token1Lost);
-        console.log("User4 got better rate due to limit order!");
         
         // Verify the order was completely filled and best order cleared
         assertEq(swapbookV2.pendingOrders(key.toId(), bestTickBefore, true), 0, "Pending order should be 0");
@@ -954,9 +1179,124 @@ contract OrderbookAVSIntegrationTest is Test, Deployers, ERC1155Holder {
         assertEq(orderbookAVS.bestOrderTicks(Currency.unwrap(token0), Currency.unwrap(token1)), 0, "Best order tick in OrderbookAVS should be 0");
         assertEq(orderbookAVS.getEscrowedBalance(user4, Currency.unwrap(token0)), 0, "User4 should not have escrowed token0");
         assertEq(orderbookAVS.getEscrowedBalance(user4, Currency.unwrap(token1)), 0, "User4 should not have escrowed token1");
+
+        console.log("User4 used wallet funds, not escrow funds");
+        console.log("onOrderExecuted was called to settle escrowedFunds");
+    }
+
+    function _executeSwapAndVerifyBeforeSwap() internal {
+        console.log("=== STEP 2: User4 swaps through router ===");
         
-        console.log("Swap router re-routing successful!");
-        console.log("Limit order had better price and was completely filled");
+        // Create user4 - a normal swap router user without deposits in OrderbookAVS
+        address user4 = makeAddr("user4");
+        
+        // Give user4 some tokens to swap with (NOT using escrow funds)
+        MockERC20(Currency.unwrap(token0)).mint(user4, 1000e18);
+        MockERC20(Currency.unwrap(token1)).mint(user4, 1000e18);
+        
+        // User4 needs to approve the swap router to spend their tokens
+        vm.startPrank(user4);
+        MockERC20(Currency.unwrap(token0)).approve(address(swapRouter), type(uint256).max);
+        MockERC20(Currency.unwrap(token1)).approve(address(swapRouter), type(uint256).max);
+        vm.stopPrank();
+        
+        // Record balances before swap
+        uint256 user1Token0Before = orderbookAVS.getEscrowedBalance(user1, Currency.unwrap(token0));
+        uint256 user1Token1Before = orderbookAVS.getEscrowedBalance(user1, Currency.unwrap(token1));
+        uint256 user4Token0Before = MockERC20(Currency.unwrap(token0)).balanceOf(user4);
+        uint256 user4Token1Before = MockERC20(Currency.unwrap(token1)).balanceOf(user4);
+
+        console.log("=== BEFORE SWAP ===");
+        console.log("User1 Token0 (escrow):", user1Token0Before);
+        console.log("User1 Token1 (escrow):", user1Token1Before);
+        console.log("User4 Token0 (wallet):", user4Token0Before);
+        console.log("User4 Token1 (wallet):", user4Token1Before);
+        
+        // Execute the swap through the swap router
+        PoolKey memory key = PoolKey({
+            currency0: token0,
+            currency1: token1,
+            fee: 3000,
+            tickSpacing: 60,
+            hooks: IHooks(address(swapbookV2))
+        });
+        int24 bestTickBefore = swapbookV2.bestTicks(key.toId(), true);
+        
+        // Expect the OrderExecutionCallback event to be emitted
+        // Check indexed parameters (token0, token1, bestOrderUser) exactly, but allow flexible values for others
+        vm.expectEmit(true, true, true, false);
+        emit OrderbookAVS.OrderExecutionCallback(
+            Currency.unwrap(token0),
+            Currency.unwrap(token1),
+            user1, // bestOrderUser
+            address(0), // swapper (any address)
+            0, // inputAmount (any amount)
+            0, // outputAmount (any amount)
+            false // zeroForOne (any boolean)
+        );
+
+        vm.expectEmit(true, true, true, true);
+        emit SwapbookV2.LimitOrderExecutedBeforeSwap(); // outputAmount will be set by the contract
+
+        vm.startPrank(user4);
+        swapRouter.swap(
+            key,
+            SwapParams({
+                zeroForOne: false, // User4 selling token1 for token0
+                amountSpecified: -int256(100e18), // Exact input of 100e18 token1
+                sqrtPriceLimitX96: TickMath.MAX_SQRT_PRICE - 1
+            }),
+            PoolSwapTest.TestSettings({
+                takeClaims: false,
+                settleUsingBurn: false
+            }),
+            ZERO_BYTES
+        );
+        vm.stopPrank();
+        
+        // Record balances after swap
+        uint256 user1Token0After = orderbookAVS.getEscrowedBalance(user1, Currency.unwrap(token0));
+        uint256 user1Token1After = orderbookAVS.getEscrowedBalance(user1, Currency.unwrap(token1));
+        uint256 user4Token0After = MockERC20(Currency.unwrap(token0)).balanceOf(user4);
+        uint256 user4Token1After = MockERC20(Currency.unwrap(token1)).balanceOf(user4);
+        
+        console.log("=== AFTER SWAP ===");
+        console.log("User1 Token0 (escrow):", user1Token0After);
+        console.log("User1 Token1 (escrow):", user1Token1After);
+        console.log("User4 Token0 (wallet):", user4Token0After);
+        console.log("User4 Token1 (wallet):", user4Token1After);
+        
+        // Check if the limit order was completely filled by checking pending orders
+        console.log("=== ORDER FILL STATUS ===");
+        console.log("Best tick before swap:", bestTickBefore);
+        console.log("Best tick after swap:", swapbookV2.bestTicks(key.toId(), true));
+        console.log("Pending order amount after swap:", swapbookV2.pendingOrders(key.toId(), bestTickBefore, true));
+        
+        if (swapbookV2.pendingOrders(key.toId(), swapbookV2.bestTicks(key.toId(), true), true) == 0) {
+            console.log("Order was COMPLETELY FILLED");
+        } else {
+            console.log("Order was PARTIALLY FILLED - remaining:", swapbookV2.pendingOrders(key.toId(), bestTickBefore, true));
+        }
+        
+        // Verify the swap was re-routed and User1's order was completely filled
+        assertEq(user1Token0After, user1Token0Before - 100e18, "User1 should have lost 100e18 token0");
+        assertTrue(user1Token1After > user1Token1Before, "User1 should have gained token1 from the swap");
+        assertTrue(user4Token0After > user4Token0Before, "User4 should have gained token0 from the swap");
+        assertTrue(user4Token1After < user4Token1Before, "User4 should have lost token1 from the swap");
+        
+        // Verify the amounts are reasonable (User4 got a better deal due to limit order)
+        uint256 user4Token0Gained = user4Token0After - user4Token0Before;
+        uint256 user4Token1Lost = user4Token1Before - user4Token1After;
+        console.log("User4 Token0 gained:", user4Token0Gained);
+        console.log("User4 Token1 lost:", user4Token1Lost);
+        
+        // Verify the order was completely filled and best order cleared
+        assertEq(swapbookV2.pendingOrders(key.toId(), bestTickBefore, true), 0, "Pending order should be 0");
+        assertEq(swapbookV2.bestTicks(key.toId(), true), 0, "Best tick in SwapbookV2 should be 0");
+        assertEq(orderbookAVS.bestOrderTicks(Currency.unwrap(token0), Currency.unwrap(token1)), 0, "Best order tick in OrderbookAVS should be 0");
+        assertEq(orderbookAVS.getEscrowedBalance(user4, Currency.unwrap(token0)), 0, "User4 should not have escrowed token0");
+        assertEq(orderbookAVS.getEscrowedBalance(user4, Currency.unwrap(token1)), 0, "User4 should not have escrowed token1");
+
         console.log("User4 used wallet funds, not escrow funds");
         console.log("onOrderExecuted was called to settle escrowedFunds");
     }
@@ -1035,7 +1375,7 @@ contract OrderbookAVSIntegrationTest is Test, Deployers, ERC1155Holder {
         console.log("=== Testing Tick 60 Exchange Rate ===");
         
         // First, place a limit order at tick 60
-        _placeLimitOrder();
+        _placeLimitOrder_tick_60();
         
         // Create user4 - a normal swap router user
         address user4 = makeAddr("user4");
@@ -1133,7 +1473,7 @@ contract OrderbookAVSIntegrationTest is Test, Deployers, ERC1155Holder {
             100, // tick 100
             true,  // zeroForOne (selling token0 for token1)
             100e18, // inputAmount
-            0,     // minOutputAmount
+            0,     // outputAmount
             user1,  // user who placed the order
             false // useHigherTick
         );
@@ -1375,7 +1715,7 @@ contract OrderbookAVSIntegrationTest is Test, Deployers, ERC1155Holder {
             tick,
             true,  // zeroForOne (selling token0 for token1)
             100e18, // inputAmount
-            0,     // minOutputAmount
+            0,     // outputAmount
             user,
             useHigherTick // Add the useHigherTick parameter
         );
