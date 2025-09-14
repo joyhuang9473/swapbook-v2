@@ -24,6 +24,7 @@ import {TickMath} from "v4-core/libraries/TickMath.sol";
 import {IHooks} from "v4-core/interfaces/IPoolManager.sol";
  
 import {SwapbookV2} from "../src/SwapbookV2.sol";
+import {SwapbookAVS} from "../src/SwapbookAVS.sol";
  
 import {ERC1155Holder} from "@openzeppelin/contracts/token/ERC1155/utils/ERC1155Holder.sol";
 

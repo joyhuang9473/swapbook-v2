@@ -14,7 +14,7 @@ import {Currency, CurrencyLibrary} from "v4-core/types/Currency.sol";
 import {StateLibrary} from "v4-core/libraries/StateLibrary.sol";
  
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
-import "./OrderbookAVS.sol";
+import "./SwapbookAVS.sol";
 
 import {TickMath} from "v4-core/libraries/TickMath.sol";
 import {BalanceDelta} from "v4-core/types/BalanceDelta.sol";
@@ -38,8 +38,8 @@ contract SwapbookV2 is BaseHook, ERC1155 {
     
     event LimitOrderExecutedAfterSwap();
 
-    // OrderbookAVS integration
-    OrderbookAVS public orderbookAVS;
+    // SwapbookAVS integration
+    SwapbookAVS public swapbookAVS;
  
     // PoolId => ZeroForOne / OneForZero => Best Tick
     mapping(
@@ -65,9 +65,9 @@ contract SwapbookV2 is BaseHook, ERC1155 {
         string memory _uri
     ) BaseHook(_manager) ERC1155(_uri) {}
 
-    // Set OrderbookAVS reference
-    function setOrderbookAVS(address _orderbookAVS) external {
-        orderbookAVS = OrderbookAVS(_orderbookAVS);
+    // Set SwapbookAVS reference
+    function setSwapbookAVS(address _swapbookAVS) external {
+        swapbookAVS = SwapbookAVS(_swapbookAVS);
     }
  
 	// BaseHook Functions
@@ -376,15 +376,15 @@ contract SwapbookV2 is BaseHook, ERC1155 {
         // `outputAmount` worth of tokens now can be claimed/redeemed by position holders
         claimableOutputTokens[orderId] += outputAmount;
 
-        // Callback to OrderbookAVS for order execution
-        if (address(orderbookAVS) != address(0)) {
+        // Callback to SwapbookAVS for order execution
+        if (address(swapbookAVS) != address(0)) {
             address token0 = Currency.unwrap(key.currency0);
             address token1 = Currency.unwrap(key.currency1);
-            address bestOrderUser = orderbookAVS.bestOrderUsers(token0, token1, zeroForOne);
+            address bestOrderUser = swapbookAVS.bestOrderUsers(token0, token1, zeroForOne);
             
             if (bestOrderUser != address(0)) {
-                // Call the callback function in OrderbookAVS
-                orderbookAVS.onOrderExecuted(
+                // Call the callback function in SwapbookAVS
+                swapbookAVS.onOrderExecuted(
                     token0,
                     token1,
                     bestOrderUser,

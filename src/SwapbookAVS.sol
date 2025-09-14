@@ -28,11 +28,11 @@ interface IOrderbookCallback {
 }
 
 /**
- * @title OrderbookAVS
+ * @title SwapbookAVS
  * @dev Manages escrowed funds for limit orders in the SwapbookV2 system
  * @notice Users can deposit and withdraw funds that are held in escrow for limit orders
  */
-contract OrderbookAVS is Ownable, IAvsLogic, IERC1155Receiver {
+contract SwapbookAVS is Ownable, IAvsLogic, IERC1155Receiver {
     using SafeERC20 for IERC20;
 
     constructor() Ownable(msg.sender) {}
