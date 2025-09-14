@@ -559,6 +559,102 @@ contract OrderbookAVSIntegrationTest is Test, Deployers, ERC1155Holder {
         assertEq(orderbookAVS.bestOrderOutputAmount(Currency.unwrap(token0), Currency.unwrap(token1)), 50e18, "New best order's OutputAmount should be 50e18");
     }
 
+    function testCompleteFillOneForZero() public {
+        // STEP 1: User1 wants to sell 200e18 token1 for 100e18 token0 (zeroForOne = false)
+        // This triggers UpdateBestPrice to record the order as the best order
+        console.log("=== STEP 1: UpdateBestPrice - User1 places order (selling token1 for token0) ===");
+        
+        // Create UpdateBestPrice task data
+        bytes memory updateTaskData = abi.encode(
+            Currency.unwrap(token0), 
+            Currency.unwrap(token1), 
+            -1000, // tick
+            false, // zeroForOne (selling token1 for token0)
+            200e18, // inputAmount (token1)
+            100e18, // outputAmount (token0)
+            user1,  // user who placed the order
+            false // useHigherTick
+        );
+        
+        IAttestationCenter.TaskInfo memory updateTaskInfo = IAttestationCenter.TaskInfo({
+            proofOfTask: "proof1",
+            data: abi.encode(OrderbookAVS.TaskType.UpdateBestPrice, updateTaskData),
+            taskPerformer: address(this),
+            taskDefinitionId: 1
+        });
+        
+        // Process the UpdateBestPrice task
+        orderbookAVS.afterTaskSubmission(updateTaskInfo, true, "", [uint256(0), uint256(0)], new uint256[](0));
+        
+        console.log("User1's order recorded as best price");
+        
+        // STEP 2: User2 wants to sell 100e18 token0 for 200e18 token1 (zeroForOne = true)
+        // This triggers CompleteFill to match with the best order
+        console.log("=== STEP 2: CompleteFill - User2 matches with best order ===");
+
+        uint256 fillAmount0 = 100e18; // User2 wants 100e18 token0
+        uint256 fillAmount1 = 200e18; // User2 wants to sell 200e18 token1
+
+        // Create CompleteFill task data
+        OrderbookAVS.OrderInfo memory user2Order = OrderbookAVS.OrderInfo({
+            user: user2,
+            token0: Currency.unwrap(token0),
+            token1: Currency.unwrap(token1),
+            amount0: fillAmount0,
+            amount1: fillAmount1,
+            tick: -1000,
+            zeroForOne: true, // user2 selling token0 for token1
+            orderId: 2
+        });
+
+        // Create empty new best order (no replacement)
+        OrderbookAVS.OrderInfo memory emptyNewBestOrder = OrderbookAVS.OrderInfo({
+            user: address(0),
+            token0: address(0),
+            token1: address(0),
+            amount0: 0,
+            amount1: 0,
+            tick: 0,
+            zeroForOne: false,
+            orderId: 0
+        });
+
+        bytes memory completeFillTaskData = abi.encode(user2Order, fillAmount0, fillAmount1, emptyNewBestOrder);
+        
+        IAttestationCenter.TaskInfo memory completeFillTaskInfo = IAttestationCenter.TaskInfo({
+            proofOfTask: "proof2",
+            data: abi.encode(OrderbookAVS.TaskType.CompleteFill, completeFillTaskData),
+            taskPerformer: address(this),
+            taskDefinitionId: 2
+        });
+        
+        // Process the CompleteFill task
+        orderbookAVS.afterTaskSubmission(completeFillTaskInfo, true, "", [uint256(0), uint256(0)], new uint256[](0));
+        
+        console.log("=== COMPLETE FILL COMPLETED ===");
+        console.log("User1 sold 200e18 token1 and received 100e18 token0");
+        console.log("User2 sold 100e18 token0 and received 200e18 token1");
+        
+        // Verify that the best order is cleared (no new best order provided)
+        address bestOrderUser = orderbookAVS.bestOrderUsers(Currency.unwrap(token0), Currency.unwrap(token1));
+        int24 bestOrderTick = orderbookAVS.bestOrderTicks(Currency.unwrap(token0), Currency.unwrap(token1));
+        bool bestOrderDirection = orderbookAVS.bestOrderDirections(Currency.unwrap(token0), Currency.unwrap(token1));
+        uint256 bestOrderInputAmount = orderbookAVS.bestOrderInputAmount(Currency.unwrap(token0), Currency.unwrap(token1));
+        uint256 bestOrderOutputAmount = orderbookAVS.bestOrderOutputAmount(Currency.unwrap(token0), Currency.unwrap(token1));
+        
+        console.log("Best order user after complete fill:", bestOrderUser);
+        console.log("Best order tick after complete fill:", bestOrderTick);
+        console.log("Best order direction after complete fill:", bestOrderDirection);
+        console.log("Best order InputAmount after complete fill:", bestOrderInputAmount);
+        console.log("Best order OutputAmount after complete fill:", bestOrderOutputAmount);
+        
+        assertEq(bestOrderUser, address(0), "Best order user should be cleared");
+        assertEq(bestOrderTick, 0, "Best order tick should be cleared");
+        assertFalse(bestOrderDirection, "Best order direction should be cleared");
+        assertEq(bestOrderInputAmount, 0, "Best order InputAmount should be cleared");
+        assertEq(bestOrderOutputAmount, 0, "Best order OutputAmount should be cleared");
+    }
+
     
     function testCompleteFillWithEmptyNewBestOrder() public {
         // STEP 1: User1 wants to sell 100e18 token0 for 200e18 token1
