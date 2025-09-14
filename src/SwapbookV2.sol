@@ -22,7 +22,7 @@ import {BeforeSwapDelta, BeforeSwapDeltaLibrary} from "v4-core/types/BeforeSwapD
  
 import {FixedPointMathLib} from "solmate/src/utils/FixedPointMathLib.sol";
 
-import {console} from "forge-std/console.sol";
+// import {console} from "forge-std/console.sol";
  
 contract SwapbookV2 is BaseHook, ERC1155 {
 

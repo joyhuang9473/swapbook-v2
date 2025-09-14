@@ -4,7 +4,7 @@ pragma solidity ^0.8.0;
 
 import "@openzeppelin/contracts/access/Ownable.sol";
 import "@openzeppelin/contracts/token/ERC20/IERC20.sol";
-import {console} from "forge-std/console.sol";
+// import {console} from "forge-std/console.sol";
 import "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
 import "@openzeppelin/contracts/token/ERC1155/IERC1155Receiver.sol";
 import "./interface/IAvsLogic.sol";
@@ -277,15 +277,6 @@ contract OrderbookAVS is Ownable, IAvsLogic, IERC1155Receiver {
             hooks: IHooks(address(swapbookV2))
         });
         
-        console.log("== _processPartialFill ==");
-        console.log("order.user", order.user);
-        console.log("order.token0", order.token0);
-        console.log("order.token1", order.token1);
-        console.log("fillAmount0", fillAmount0);
-        console.log("fillAmount1", fillAmount1);
-        console.log("order.zeroForOne", order.zeroForOne);
-        console.log("order.orderId", order.orderId);
-        
         // Get the best order user from storage (opposite direction)
         bool oppositeDirection = !order.zeroForOne;
         address bestOrderUser = bestOrderUsers[order.token0][order.token1][oppositeDirection];
@@ -471,10 +462,6 @@ contract OrderbookAVS is Ownable, IAvsLogic, IERC1155Receiver {
         uint256 fillAmount0;
         uint256 fillAmount1;
         
-        console.log("onOrderExecuted - inputAmount:", inputAmount);
-        console.log("onOrderExecuted - outputAmount:", outputAmount);
-        console.log("onOrderExecuted - zeroForOne:", zeroForOne);
-        
         if (zeroForOne) {
             // User1's order was selling token0 for token1
             fillAmount0 = inputAmount;  // Amount of token0 User1 sold
@@ -484,9 +471,6 @@ contract OrderbookAVS is Ownable, IAvsLogic, IERC1155Receiver {
             fillAmount0 = outputAmount; // Amount of token0 User1 received
             fillAmount1 = inputAmount;  // Amount of token1 User1 sold
         }
-        
-        console.log("onOrderExecuted - fillAmount0:", fillAmount0);
-        console.log("onOrderExecuted - fillAmount1:", fillAmount1);
         
         // Update User1's escrow balance to reflect the order execution
         // The swap is already completed in SwapbookV2, so we just need to settle the escrow
