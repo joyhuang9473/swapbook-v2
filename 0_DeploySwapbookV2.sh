@@ -59,8 +59,8 @@ forge script script/0_DeploySwapbookV2.s.sol \
     --rpc-url "$BASE_TESTNET_RPC" \
     --private-key "$PRIVATE_KEY" \
     --broadcast \
-    # --verify \
-    # --etherscan-api-key "$BASE_ETHERSCAN_API_KEY" \
+    --verify \
+    --etherscan-api-key "$BASE_ETHERSCAN_API_KEY" \
     --chain base-sepolia \
     --gas-limit 10000000
 
