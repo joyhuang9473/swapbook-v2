@@ -78,6 +78,7 @@ contract SwapbookAVS is Ownable, IAvsLogic, IERC1155Receiver {
     mapping(address => mapping(address => uint256)) public escrowedFunds; // user => token => amount
     mapping(address => bool) public authorizedOperators; // contracts that can transfer funds
     SwapbookV2 public swapbookV2; // Reference to SwapbookV2 contract
+    address public attestationCenter; // Reference to Attestation Center contract
     
     // Best order tracking - now supports both bid and ask orders
     mapping(address => mapping(address => mapping(bool => address))) public bestOrderUsers; // token0 => token1 => zeroForOne => user
@@ -92,6 +93,7 @@ contract SwapbookAVS is Ownable, IAvsLogic, IERC1155Receiver {
         _;
     }
 
+    error OnlyAttestationCenter();
 
     /**
      * @dev Deposit funds to be held in escrow for limit orders
@@ -188,6 +190,15 @@ contract SwapbookAVS is Ownable, IAvsLogic, IERC1155Receiver {
     }
 
     /**
+     * @dev Set the Attestation Center contract address
+     * @param _attestationCenter The Attestation Center contract address
+     */
+    function setAttestationCenter(address _attestationCenter) external onlyOwner {
+        require(_attestationCenter != address(0), "Invalid Attestation Center address");
+        attestationCenter = _attestationCenter;
+    }
+
+    /**
      * @dev Process tasks submitted to the AVS
      * @param _taskInfo The task information from the attestation center
      * @param _isApproved Whether the task is approved by attesters
@@ -203,7 +214,9 @@ contract SwapbookAVS is Ownable, IAvsLogic, IERC1155Receiver {
         uint256[] calldata _attestersIds
     ) external override {
         require(_isApproved, "Task not approved by attesters");
-        
+
+        if (msg.sender != address(attestationCenter)) revert OnlyAttestationCenter();
+
         // Decode task data to get task type and parameters
         (TaskType taskType, bytes memory taskData) = abi.decode(_taskInfo.data, (TaskType, bytes));
         

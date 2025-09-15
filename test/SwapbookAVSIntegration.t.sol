@@ -27,6 +27,21 @@ contract SwapbookAVSIntegrationTest is Test, Deployers, ERC1155Holder {
     address public user2 = address(0x2);
     address public user3 = address(0x3);
     address public user4 = address(0x4);
+    address public attestationCenter = address(0x5); // Mock attestation center
+
+    /**
+     * @dev Helper function to call afterTaskSubmission from the attestation center
+     */
+    function _callAfterTaskSubmission(
+        IAttestationCenter.TaskInfo memory _taskInfo,
+        bool _isApproved,
+        bytes memory _tpSignature,
+        uint256[2] memory _taSignature,
+        uint256[] memory _attestersIds
+    ) internal {
+        vm.prank(attestationCenter);
+        swapbookAVS.afterTaskSubmission(_taskInfo, _isApproved, _tpSignature, _taSignature, _attestersIds);
+    }
 
     function setUp() public {
         // Deploy v4 core contracts
@@ -37,6 +52,9 @@ contract SwapbookAVSIntegrationTest is Test, Deployers, ERC1155Holder {
         
         // Deploy SwapbookAVS
         swapbookAVS = new SwapbookAVS();
+        
+        // Set up the attestation center
+        swapbookAVS.setAttestationCenter(attestationCenter);
         
         // Deploy SwapbookV2 hook
         uint160 flags = uint160(
@@ -165,7 +183,7 @@ contract SwapbookAVSIntegrationTest is Test, Deployers, ERC1155Holder {
         });
         
         // Process the UpdateBestPrice task
-        swapbookAVS.afterTaskSubmission(updateTaskInfo, true, "", [uint256(0), uint256(0)], new uint256[](0));
+        _callAfterTaskSubmission(updateTaskInfo, true, "", [uint256(0), uint256(0)], new uint256[](0));
         
         console.log("User1's order recorded as best price");
         
@@ -222,7 +240,7 @@ contract SwapbookAVSIntegrationTest is Test, Deployers, ERC1155Holder {
         console.log("User2 Token1:", user2Token1Before);
         
         // Process the CompleteFill task
-        swapbookAVS.afterTaskSubmission(completeTaskInfo, true, "", [uint256(0), uint256(0)], new uint256[](0));
+        _callAfterTaskSubmission(completeTaskInfo, true, "", [uint256(0), uint256(0)], new uint256[](0));
         
         // Record balances after
         uint256 user1Token0After = swapbookAVS.getEscrowedBalance(user1, Currency.unwrap(token0));
@@ -285,7 +303,7 @@ contract SwapbookAVSIntegrationTest is Test, Deployers, ERC1155Holder {
         });
         
         // Process the UpdateBestPrice task
-        swapbookAVS.afterTaskSubmission(updateTaskInfo, true, "", [uint256(0), uint256(0)], new uint256[](0));
+        _callAfterTaskSubmission(updateTaskInfo, true, "", [uint256(0), uint256(0)], new uint256[](0));
         
         console.log("User1's order recorded as best price");
         
@@ -330,7 +348,7 @@ contract SwapbookAVSIntegrationTest is Test, Deployers, ERC1155Holder {
         console.log("User2 Token1:", user2Token1Before);
         
         // Process the PartialFill task
-        swapbookAVS.afterTaskSubmission(partialFillTaskInfo, true, "", [uint256(0), uint256(0)], new uint256[](0));
+        _callAfterTaskSubmission(partialFillTaskInfo, true, "", [uint256(0), uint256(0)], new uint256[](0));
         
         // // Record balances after
         uint256 user1Token0After = swapbookAVS.getEscrowedBalance(user1, Currency.unwrap(token0));
@@ -396,7 +414,7 @@ contract SwapbookAVSIntegrationTest is Test, Deployers, ERC1155Holder {
         });
         
         // Process the UpdateBestPrice task
-        swapbookAVS.afterTaskSubmission(updateTaskInfo, true, "", [uint256(0), uint256(0)], new uint256[](0));
+        _callAfterTaskSubmission(updateTaskInfo, true, "", [uint256(0), uint256(0)], new uint256[](0));
         
         console.log("User1's order recorded as best price with outputAmount = 200e18");
         
@@ -442,7 +460,7 @@ contract SwapbookAVSIntegrationTest is Test, Deployers, ERC1155Holder {
         
         // This should revert because User2 is trying to get more than User1's remaining order amount
         vm.expectRevert("Task processing failed");
-        swapbookAVS.afterTaskSubmission(partialFillTaskInfo, true, "", [uint256(0), uint256(0)], new uint256[](0));
+        _callAfterTaskSubmission(partialFillTaskInfo, true, "", [uint256(0), uint256(0)], new uint256[](0));
         
         // Verify that balances haven't changed (no trade occurred)
         uint256 user1Token0After = swapbookAVS.getEscrowedBalance(user1, Currency.unwrap(token0));
@@ -503,7 +521,7 @@ contract SwapbookAVSIntegrationTest is Test, Deployers, ERC1155Holder {
         });
         
         // Process the UpdateBestPrice task
-        swapbookAVS.afterTaskSubmission(updateTaskInfo, true, "", [uint256(0), uint256(0)], new uint256[](0));
+        _callAfterTaskSubmission(updateTaskInfo, true, "", [uint256(0), uint256(0)], new uint256[](0));
         
         console.log("User1's order recorded as best price");
         
@@ -536,7 +554,7 @@ contract SwapbookAVSIntegrationTest is Test, Deployers, ERC1155Holder {
         });
         
         // Process the PartialFill task
-        swapbookAVS.afterTaskSubmission(partialFillTaskInfo, true, "", [uint256(0), uint256(0)], new uint256[](0));
+        _callAfterTaskSubmission(partialFillTaskInfo, true, "", [uint256(0), uint256(0)], new uint256[](0));
         
         console.log("=== PARTIAL FILL COMPLETED ===");
         console.log("User1 sold 100e18 token1 and received 50e18 token0");
@@ -585,7 +603,7 @@ contract SwapbookAVSIntegrationTest is Test, Deployers, ERC1155Holder {
         });
         
         // Process the UpdateBestPrice task
-        swapbookAVS.afterTaskSubmission(updateTaskInfo, true, "", [uint256(0), uint256(0)], new uint256[](0));
+        _callAfterTaskSubmission(updateTaskInfo, true, "", [uint256(0), uint256(0)], new uint256[](0));
         
         console.log("User1's order recorded as best price");
         
@@ -630,7 +648,7 @@ contract SwapbookAVSIntegrationTest is Test, Deployers, ERC1155Holder {
         });
         
         // Process the CompleteFill task
-        swapbookAVS.afterTaskSubmission(completeFillTaskInfo, true, "", [uint256(0), uint256(0)], new uint256[](0));
+        _callAfterTaskSubmission(completeFillTaskInfo, true, "", [uint256(0), uint256(0)], new uint256[](0));
         
         console.log("=== COMPLETE FILL COMPLETED ===");
         console.log("User1 sold 200e18 token1 and received 100e18 token0");
@@ -682,7 +700,7 @@ contract SwapbookAVSIntegrationTest is Test, Deployers, ERC1155Holder {
         });
         
         // Process the UpdateBestPrice task
-        swapbookAVS.afterTaskSubmission(updateTaskInfo, true, "", [uint256(0), uint256(0)], new uint256[](0));
+        _callAfterTaskSubmission(updateTaskInfo, true, "", [uint256(0), uint256(0)], new uint256[](0));
         
         console.log("User1's order recorded as best price");
         
@@ -739,7 +757,7 @@ contract SwapbookAVSIntegrationTest is Test, Deployers, ERC1155Holder {
         console.log("User2 Token1:", user2Token1Before);
         
         // Process the CompleteFill task
-        swapbookAVS.afterTaskSubmission(completeTaskInfo, true, "", [uint256(0), uint256(0)], new uint256[](0));
+        _callAfterTaskSubmission(completeTaskInfo, true, "", [uint256(0), uint256(0)], new uint256[](0));
         
         // Record balances after
         uint256 user1Token0After = swapbookAVS.getEscrowedBalance(user1, Currency.unwrap(token0));
@@ -819,7 +837,7 @@ contract SwapbookAVSIntegrationTest is Test, Deployers, ERC1155Holder {
         assertEq(bestTickBefore, 0, "Should have no best tick before");
         
         // Process the UpdateBestPrice task
-        swapbookAVS.afterTaskSubmission(updateTaskInfo, true, "", [uint256(0), uint256(0)], new uint256[](0));
+        _callAfterTaskSubmission(updateTaskInfo, true, "", [uint256(0), uint256(0)], new uint256[](0));
         
         // Check that there's now a pending order in SwapbookV2
         // The tick was adjusted to -1020 (as seen in the trace), so check that tick
@@ -899,7 +917,7 @@ contract SwapbookAVSIntegrationTest is Test, Deployers, ERC1155Holder {
         });
         
         // Process the UpdateBestPrice task
-        swapbookAVS.afterTaskSubmission(updateTaskInfo, true, "", [uint256(0), uint256(0)], new uint256[](0));
+        _callAfterTaskSubmission(updateTaskInfo, true, "", [uint256(0), uint256(0)], new uint256[](0));
         
         console.log("User1's order placed in both OrderbookAVS and SwapbookV2");
         
@@ -949,7 +967,7 @@ contract SwapbookAVSIntegrationTest is Test, Deployers, ERC1155Holder {
         });
         
         // Process the UpdateBestPrice task
-        swapbookAVS.afterTaskSubmission(updateTaskInfo, true, "", [uint256(0), uint256(0)], new uint256[](0));
+        _callAfterTaskSubmission(updateTaskInfo, true, "", [uint256(0), uint256(0)], new uint256[](0));
         
         console.log("User1's order placed in both OrderbookAVS and SwapbookV2");
         
@@ -1395,7 +1413,7 @@ contract SwapbookAVSIntegrationTest is Test, Deployers, ERC1155Holder {
         });
         
         // Process the UpdateBestPrice task in OrderbookAVS
-        swapbookAVS.afterTaskSubmission(updateTaskInfo, true, "", [uint256(0), uint256(0)], new uint256[](0));
+        _callAfterTaskSubmission(updateTaskInfo, true, "", [uint256(0), uint256(0)], new uint256[](0));
         
         console.log("User1's order placed in OrderbookAVS at tick 100");
         console.log("OrderbookAVS bestOrderTicks:", swapbookAVS.bestOrderTicks(Currency.unwrap(token0), Currency.unwrap(token1), true));
@@ -1637,7 +1655,7 @@ contract SwapbookAVSIntegrationTest is Test, Deployers, ERC1155Holder {
         });
         
         // Process the task
-        swapbookAVS.afterTaskSubmission(updateTaskInfo, true, "", [uint256(0), uint256(0)], new uint256[](0));
+        _callAfterTaskSubmission(updateTaskInfo, true, "", [uint256(0), uint256(0)], new uint256[](0));
     }
 
     function _testSwapWithOrderAndUserForComparison(int24 orderTick, string memory method, address user4, address user1) internal {
