@@ -1,11 +1,11 @@
 #!/bin/bash
 
-# Integration Test script for SwapbookV2 + SwapbookAVS
-# This script tests the integration by simulating the testSwapbookV2Integration test case
+# Setup Integration script for SwapbookV2 + SwapbookAVS
+# This script completes the integration by setting up the remaining connections
 
 set -e  # Exit on any error
 
-echo "🧪 Testing SwapbookV2 + SwapbookAVS Integration..."
+echo "🔧 Setting up SwapbookV2 + SwapbookAVS Integration..."
 
 # Check if .env file exists
 if [ ! -f .env ]; then
@@ -67,29 +67,30 @@ fi
 
 echo "✅ Build successful"
 
-# Run the integration test script
-echo "🚀 Running integration test..."
+# Run the integration setup script
+echo "🚀 Setting up integration..."
 
-forge script script/3_SetupIntegration.s.sol \
+forge script script/2_SetupIntegration.s.sol \
     --rpc-url "$BASE_TESTNET_RPC" \
     --private-key "$PRIVATE_KEY" \
     --broadcast \
     --chain base-sepolia
 
 if [ $? -eq 0 ]; then
-    echo "✅ Integration test successful!"
-    echo "🎉 SwapbookV2 + SwapbookAVS integration is working correctly!"
+    echo "✅ Integration setup successful!"
+    echo "🎉 SwapbookV2 + SwapbookAVS integration is now complete!"
     echo ""
-    echo "📋 Test Summary:"
-    echo "1. ✅ Test tokens deployed and minted"
-    echo "2. ✅ UpdateBestPrice task processed"
-    echo "3. ✅ Order placed in SwapbookV2"
-    echo "4. ✅ Best order information stored in SwapbookAVS"
-    echo "5. ✅ All verifications passed"
+    echo "📋 Integration Summary:"
+    echo "1. ✅ Attestation center set in SwapbookAVS"
+    echo "2. ✅ SwapbookV2 address set in SwapbookAVS"
+    echo "3. ✅ SwapbookAVS address set in SwapbookV2"
+    echo "4. ✅ All connections verified"
     echo ""
-    echo "🚀 The integration is functioning as expected!"
+    echo "🚀 System is now ready for use:"
+    echo "- Users can deposit funds via SwapbookAVS"
+    echo "- Limit orders can be placed and managed"
+    echo "- Swaps will trigger order execution via SwapbookV2 hook"
 else
-    echo "❌ Integration test failed!"
-    echo "Please check the logs above for details"
+    echo "❌ Integration setup failed!"
     exit 1
 fi

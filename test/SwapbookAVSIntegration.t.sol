@@ -150,11 +150,9 @@ contract SwapbookAVSIntegrationTest is Test, Deployers, ERC1155Holder {
         swapbookAVS.depositFunds(Currency.unwrap(token1), 500e18);
         vm.stopPrank();
 
-        // Approve SwapbookV2 to spend OrderbookAVS tokens
-        vm.prank(address(swapbookAVS));
-        MockERC20(Currency.unwrap(token0)).approve(address(swapbookV2), type(uint256).max);
-        vm.prank(address(swapbookAVS));
-        MockERC20(Currency.unwrap(token1)).approve(address(swapbookV2), type(uint256).max);
+        // Approve SwapbookV2 to spend SwapbookAVS tokens
+        swapbookAVS.approveToken(Currency.unwrap(token0), address(swapbookV2), type(uint256).max);
+        swapbookAVS.approveToken(Currency.unwrap(token1), address(swapbookV2), type(uint256).max);
         
     }
 

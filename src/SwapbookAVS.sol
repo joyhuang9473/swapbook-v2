@@ -73,6 +73,7 @@ contract SwapbookAVS is Ownable, IAvsLogic, IERC1155Receiver {
     event BestPriceUpdated(address indexed token0, address indexed token1, int24 newBestTick, bool zeroForOne);
     event WithdrawalProcessed(address indexed user, address indexed token, uint256 amount);
     event OrderExecutionCallback(address indexed token0, address indexed token1, address indexed bestOrderUser, address swapper, uint256 inputAmount, uint256 outputAmount, bool zeroForOne);
+    event TokenApproved(address indexed token, address indexed spender, uint256 amount);
 
     // State variables
     mapping(address => mapping(address => uint256)) public escrowedFunds; // user => token => amount
@@ -196,6 +197,17 @@ contract SwapbookAVS is Ownable, IAvsLogic, IERC1155Receiver {
     function setAttestationCenter(address _attestationCenter) external onlyOwner {
         require(_attestationCenter != address(0), "Invalid Attestation Center address");
         attestationCenter = _attestationCenter;
+    }
+
+    /**
+     * @notice Approve a token for spending by a spender
+     * @param token The token address to approve
+     * @param spender The address to approve for spending
+     * @param amount The amount to approve
+     */
+    function approveToken(address token, address spender, uint256 amount) external onlyOwner {
+        IERC20(token).approve(spender, amount);
+        emit TokenApproved(token, spender, amount);
     }
 
     /**
