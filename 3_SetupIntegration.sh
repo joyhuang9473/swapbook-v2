@@ -16,6 +16,8 @@ if [ ! -f .env ]; then
     echo "SWAPBOOK_V2_ADDRESS=0x..."
     echo "SWAPBOOK_AVS_ADDRESS=0x..."
     echo "ATTESTATION_CENTER_ADDRESS=0x..."
+    echo "TOKEN0_ADDRESS=0x..."
+    echo "TOKEN1_ADDRESS=0x..."
     exit 1
 fi
 
@@ -49,12 +51,24 @@ if [ -z "$ATTESTATION_CENTER_ADDRESS" ]; then
     exit 1
 fi
 
+if [ -z "$TOKEN0_ADDRESS" ]; then
+    echo "❌ Error: TOKEN0_ADDRESS not found in .env file"
+    exit 1
+fi
+
+if [ -z "$TOKEN1_ADDRESS" ]; then
+    echo "❌ Error: TOKEN1_ADDRESS not found in .env file"
+    exit 1
+fi
+
 echo "✅ Environment variables loaded successfully"
 echo "📍 RPC URL: $BASE_TESTNET_RPC"
 echo "🔑 Private key: ${PRIVATE_KEY:0:10}...${PRIVATE_KEY: -4}"
 echo "🏗️  SwapbookV2 address: $SWAPBOOK_V2_ADDRESS"
 echo "🏗️  SwapbookAVS address: $SWAPBOOK_AVS_ADDRESS"
 echo "🏗️  Attestation Center address: $ATTESTATION_CENTER_ADDRESS"
+echo "🪙  Token0 address: $TOKEN0_ADDRESS"
+echo "🪙  Token1 address: $TOKEN1_ADDRESS"
 
 # Build the project first
 echo "🔨 Building project..."
@@ -70,7 +84,7 @@ echo "✅ Build successful"
 # Run the integration setup script
 echo "🚀 Setting up integration..."
 
-forge script script/2_SetupIntegration.s.sol \
+forge script script/3_SetupIntegration.s.sol \
     --rpc-url "$BASE_TESTNET_RPC" \
     --private-key "$PRIVATE_KEY" \
     --broadcast \
@@ -84,7 +98,8 @@ if [ $? -eq 0 ]; then
     echo "1. ✅ Attestation center set in SwapbookAVS"
     echo "2. ✅ SwapbookV2 address set in SwapbookAVS"
     echo "3. ✅ SwapbookAVS address set in SwapbookV2"
-    echo "4. ✅ All connections verified"
+    echo "4. ✅ Token approvals set for SwapbookV2"
+    echo "5. ✅ All connections and approvals verified"
     echo ""
     echo "🚀 System is now ready for use:"
     echo "- Users can deposit funds via SwapbookAVS"
