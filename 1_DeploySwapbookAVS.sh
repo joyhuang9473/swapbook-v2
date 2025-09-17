@@ -13,7 +13,7 @@ if [ ! -f .env ]; then
     echo "Please create a .env file with the following variables:"
     echo "PRIVATE_KEY=0x..."
     echo "BASE_TESTNET_RPC=https://sepolia.base.org"
-    echo "BASE_ETHERSCAN_API_KEY=your_api_key_here"
+    echo "BASE_ETHERSCAN_API_KEY=your_etherscan_v2_api_key_here"
     exit 1
 fi
 
@@ -31,11 +31,6 @@ if [ -z "$BASE_TESTNET_RPC" ]; then
     echo "❌ Error: BASE_TESTNET_RPC not found in .env file"
     exit 1
 fi
-
-# if [ -z "$BASE_ETHERSCAN_API_KEY" ]; then
-#     echo "❌ Error: BASE_ETHERSCAN_API_KEY not found in .env file"
-#     exit 1
-# fi
 
 echo "✅ Environment variables loaded successfully"
 echo "📍 RPC URL: $BASE_TESTNET_RPC"
@@ -59,8 +54,6 @@ forge script script/1_DeploySwapbookAVS.s.sol \
     --rpc-url "$BASE_TESTNET_RPC" \
     --private-key "$PRIVATE_KEY" \
     --broadcast \
-    --verify \
-    --etherscan-api-key "$BASE_ETHERSCAN_API_KEY" \
     --chain base-sepolia \
     --gas-limit 10000000
 

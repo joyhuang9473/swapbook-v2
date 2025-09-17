@@ -32,11 +32,6 @@ if [ -z "$BASE_TESTNET_RPC" ]; then
     exit 1
 fi
 
-# if [ -z "$BASE_ETHERSCAN_API_KEY" ]; then
-#     echo "❌ Error: BASE_ETHERSCAN_API_KEY not found in .env file"
-#     exit 1
-# fi
-
 echo "✅ Environment variables loaded successfully"
 echo "📍 RPC URL: $BASE_TESTNET_RPC"
 echo "🔑 Private key: ${PRIVATE_KEY:0:10}...${PRIVATE_KEY: -4}"
@@ -59,8 +54,6 @@ forge script script/0_DeploySwapbookV2.s.sol \
     --rpc-url "$BASE_TESTNET_RPC" \
     --private-key "$PRIVATE_KEY" \
     --broadcast \
-    --verify \
-    --etherscan-api-key "$BASE_ETHERSCAN_API_KEY" \
     --chain base-sepolia \
     --gas-limit 10000000
 
