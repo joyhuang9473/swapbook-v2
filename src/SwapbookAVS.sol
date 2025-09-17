@@ -232,20 +232,23 @@ contract SwapbookAVS is Ownable, IAvsLogic, IERC1155Receiver {
         // Decode task data to get task type and parameters
         (TaskType taskType, bytes memory taskData) = abi.decode(_taskInfo.data, (TaskType, bytes));
         
-        bool success = _processTask(_taskInfo.taskDefinitionId, taskType, taskData);
+        // Parse task_id from taskData (first parameter)
+        uint256 taskId = abi.decode(taskData, (uint256));
+
+        bool success = _processTask(taskId, taskData);
         require(success, "Task processing failed");
     }
 
-    function _processTask(uint256 taskId, TaskType taskType, bytes memory taskData) internal returns (bool) {
-        if (taskType == TaskType.NoOp) {
+    function _processTask(uint256 taskId, bytes memory taskData) internal returns (bool) {
+        if (taskId == uint256(TaskType.NoOp)) {
             return _processNoOp(taskId);
-        } else if (taskType == TaskType.UpdateBestPrice) {
+        } else if (taskId == uint256(TaskType.UpdateBestPrice)) {
             return _processUpdateBestPrice(taskId, taskData);
-        } else if (taskType == TaskType.PartialFill) {
+        } else if (taskId == uint256(TaskType.PartialFill)) {
             return _processPartialFill(taskId, taskData);
-        } else if (taskType == TaskType.CompleteFill) {
+        } else if (taskId == uint256(TaskType.CompleteFill)) {
             return _processCompleteFill(taskId, taskData);
-        } else if (taskType == TaskType.ProcessWithdrawal) {
+        } else if (taskId == uint256(TaskType.ProcessWithdrawal)) {
             return _processWithdrawal(taskId, taskData);
         }
         return false;
@@ -257,8 +260,8 @@ contract SwapbookAVS is Ownable, IAvsLogic, IERC1155Receiver {
     }
 
     function _processUpdateBestPrice(uint256 taskId, bytes memory taskData) internal returns (bool) {
-        (address token0, address token1, int24 newBestTick, bool zeroForOne, uint256 inputAmount, uint256 outputAmount, address user, bool useHigherTick) = 
-            abi.decode(taskData, (address, address, int24, bool, uint256, uint256, address, bool));
+        (uint256 task_id, address token0, address token1, int24 newBestTick, bool zeroForOne, uint256 inputAmount, uint256 outputAmount, address user, bool useHigherTick) = 
+            abi.decode(taskData, (uint256, address, address, int24, bool, uint256, uint256, address, bool));
 
         // Store the best order information in OrderbookAVS
         bestOrderUsers[token0][token1][zeroForOne] = user;
@@ -291,8 +294,8 @@ contract SwapbookAVS is Ownable, IAvsLogic, IERC1155Receiver {
     }
 
     function _processPartialFill(uint256 taskId, bytes memory taskData) internal returns (bool) {
-        (OrderInfo memory order, uint256 fillAmount0, uint256 fillAmount1) = 
-            abi.decode(taskData, (OrderInfo, uint256, uint256));
+        (uint256 task_id, OrderInfo memory order, uint256 fillAmount0, uint256 fillAmount1) = 
+            abi.decode(taskData, (uint256, OrderInfo, uint256, uint256));
         
         PoolKey memory key = PoolKey({
             currency0: Currency.wrap(order.token0),
@@ -357,8 +360,8 @@ contract SwapbookAVS is Ownable, IAvsLogic, IERC1155Receiver {
     }
 
     function _processCompleteFill(uint256 taskId, bytes memory taskData) internal returns (bool) {
-        (OrderInfo memory incomingOrder, uint256 fillAmount0, uint256 fillAmount1, OrderInfo memory newBestOrder) = 
-            abi.decode(taskData, (OrderInfo, uint256, uint256, OrderInfo));
+        (uint256 task_id, OrderInfo memory incomingOrder, uint256 fillAmount0, uint256 fillAmount1, OrderInfo memory newBestOrder) = 
+            abi.decode(taskData, (uint256, OrderInfo, uint256, uint256, OrderInfo));
         
         // Get the best order user from storage (opposite direction)
         bool oppositeDirection = !incomingOrder.zeroForOne;

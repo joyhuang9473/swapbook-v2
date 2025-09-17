@@ -163,6 +163,7 @@ contract SwapbookAVSIntegrationTest is Test, Deployers, ERC1155Holder {
         
         // Create UpdateBestPrice task data
         bytes memory updateTaskData = abi.encode(
+            uint256(SwapbookAVS.TaskType.UpdateBestPrice), // task_id
             Currency.unwrap(token0), 
             Currency.unwrap(token1), 
             -1000, // tick
@@ -196,7 +197,7 @@ contract SwapbookAVSIntegrationTest is Test, Deployers, ERC1155Holder {
             token1: Currency.unwrap(token1),
             amount0: 100e18,
             amount1: 200e18,
-            tick: -2000,
+            tick: -1000,
             zeroForOne: false, // user2 selling token1 for token0
             orderId: 2
         });
@@ -208,7 +209,7 @@ contract SwapbookAVSIntegrationTest is Test, Deployers, ERC1155Holder {
             token1: Currency.unwrap(token1),
             amount0: 50e18,
             amount1: 100e18,
-            tick: -1500, // Better price than user1's -1000
+            tick: -500, // Better price than user1's -1000
             zeroForOne: true, // user3 selling token0 for token1
             orderId: 3
         });
@@ -216,7 +217,7 @@ contract SwapbookAVSIntegrationTest is Test, Deployers, ERC1155Holder {
         uint256 fillAmount0 = 100e18;
         uint256 fillAmount1 = 200e18;
         
-        bytes memory completeTaskData = abi.encode(user2Order, fillAmount0, fillAmount1, newBestOrder);
+        bytes memory completeTaskData = abi.encode(SwapbookAVS.TaskType.CompleteFill, user2Order, fillAmount0, fillAmount1, newBestOrder);
         
         IAttestationCenter.TaskInfo memory completeTaskInfo = IAttestationCenter.TaskInfo({
             proofOfTask: "proof2",
@@ -272,7 +273,7 @@ contract SwapbookAVSIntegrationTest is Test, Deployers, ERC1155Holder {
         console.log("New best order direction (zeroForOne):", newBestOrderDirection);
         
         assertEq(newBestOrderUser, user3, "New best order user should be user3");
-        assertEq(newBestOrderTick, -1500, "New best order tick should be -1500");
+        assertEq(newBestOrderTick, -500, "New best order tick should be -500");
         assertTrue(newBestOrderDirection, "New best order should be zeroForOne (selling token0 for token1)");
     }
     
@@ -283,6 +284,7 @@ contract SwapbookAVSIntegrationTest is Test, Deployers, ERC1155Holder {
         
         // Create UpdateBestPrice task data
         bytes memory updateTaskData = abi.encode(
+            uint256(SwapbookAVS.TaskType.UpdateBestPrice), // task_id
             Currency.unwrap(token0), 
             Currency.unwrap(token1), 
             -1000, // tick
@@ -324,7 +326,7 @@ contract SwapbookAVSIntegrationTest is Test, Deployers, ERC1155Holder {
             orderId: 2
         });
 
-        bytes memory partialFillTaskData = abi.encode(user2Order, fillAmount0, fillAmount1);
+        bytes memory partialFillTaskData = abi.encode(uint256(SwapbookAVS.TaskType.PartialFill), user2Order, fillAmount0, fillAmount1);
         
         IAttestationCenter.TaskInfo memory partialFillTaskInfo = IAttestationCenter.TaskInfo({
             proofOfTask: "proof2",
@@ -394,6 +396,7 @@ contract SwapbookAVSIntegrationTest is Test, Deployers, ERC1155Holder {
         
         // Create UpdateBestPrice task data
         bytes memory updateTaskData = abi.encode(
+            uint256(SwapbookAVS.TaskType.UpdateBestPrice), // task_id
             Currency.unwrap(token0), 
             Currency.unwrap(token1), 
             -1000, // tick
@@ -435,7 +438,7 @@ contract SwapbookAVSIntegrationTest is Test, Deployers, ERC1155Holder {
             orderId: 2
         });
 
-        bytes memory partialFillTaskData = abi.encode(user2Order, fillAmount0, fillAmount1);
+        bytes memory partialFillTaskData = abi.encode(uint256(SwapbookAVS.TaskType.PartialFill), user2Order, fillAmount0, fillAmount1);
         
         IAttestationCenter.TaskInfo memory partialFillTaskInfo = IAttestationCenter.TaskInfo({
             proofOfTask: "proof2",
@@ -501,6 +504,7 @@ contract SwapbookAVSIntegrationTest is Test, Deployers, ERC1155Holder {
         
         // Create UpdateBestPrice task data
         bytes memory updateTaskData = abi.encode(
+            uint256(SwapbookAVS.TaskType.UpdateBestPrice), // task_id
             Currency.unwrap(token0), 
             Currency.unwrap(token1), 
             -1000, // tick
@@ -542,7 +546,7 @@ contract SwapbookAVSIntegrationTest is Test, Deployers, ERC1155Holder {
             orderId: 2
         });
 
-        bytes memory partialFillTaskData = abi.encode(user2Order, fillAmount0, fillAmount1);
+        bytes memory partialFillTaskData = abi.encode(uint256(SwapbookAVS.TaskType.PartialFill), user2Order, fillAmount0, fillAmount1);
         
         IAttestationCenter.TaskInfo memory partialFillTaskInfo = IAttestationCenter.TaskInfo({
             proofOfTask: "proof2",
@@ -583,6 +587,7 @@ contract SwapbookAVSIntegrationTest is Test, Deployers, ERC1155Holder {
         
         // Create UpdateBestPrice task data
         bytes memory updateTaskData = abi.encode(
+            uint256(SwapbookAVS.TaskType.UpdateBestPrice), // task_id
             Currency.unwrap(token0), 
             Currency.unwrap(token1), 
             -1000, // tick
@@ -636,7 +641,7 @@ contract SwapbookAVSIntegrationTest is Test, Deployers, ERC1155Holder {
             orderId: 0
         });
 
-        bytes memory completeFillTaskData = abi.encode(user2Order, fillAmount0, fillAmount1, emptyNewBestOrder);
+        bytes memory completeFillTaskData = abi.encode(uint256(SwapbookAVS.TaskType.CompleteFill), user2Order, fillAmount0, fillAmount1, emptyNewBestOrder);
         
         IAttestationCenter.TaskInfo memory completeFillTaskInfo = IAttestationCenter.TaskInfo({
             proofOfTask: "proof2",
@@ -680,6 +685,7 @@ contract SwapbookAVSIntegrationTest is Test, Deployers, ERC1155Holder {
         
         // Create UpdateBestPrice task data
         bytes memory updateTaskData = abi.encode(
+            uint256(SwapbookAVS.TaskType.UpdateBestPrice), // task_id
             Currency.unwrap(token0), 
             Currency.unwrap(token1), 
             -1000, // tick
@@ -733,7 +739,7 @@ contract SwapbookAVSIntegrationTest is Test, Deployers, ERC1155Holder {
         uint256 fillAmount0 = 100e18;
         uint256 fillAmount1 = 200e18;
         
-        bytes memory completeTaskData = abi.encode(user2Order, fillAmount0, fillAmount1, emptyNewBestOrder);
+        bytes memory completeTaskData = abi.encode(uint256(SwapbookAVS.TaskType.CompleteFill), user2Order, fillAmount0, fillAmount1, emptyNewBestOrder);
         
         IAttestationCenter.TaskInfo memory completeTaskInfo = IAttestationCenter.TaskInfo({
             proofOfTask: "proof2",
@@ -798,12 +804,13 @@ contract SwapbookAVSIntegrationTest is Test, Deployers, ERC1155Holder {
         
         // Create UpdateBestPrice task data
         bytes memory updateTaskData = abi.encode(
+            uint256(SwapbookAVS.TaskType.UpdateBestPrice), // task_id
             Currency.unwrap(token0), 
             Currency.unwrap(token1), 
             -1000, // tick
             true,  // zeroForOne (selling token0 for token1)
             100e18, // inputAmount
-            0,     // outputAmount
+            200e18,     // outputAmount
             user1,  // user who placed the order
             false // useHigherTick
         );
@@ -897,12 +904,13 @@ contract SwapbookAVSIntegrationTest is Test, Deployers, ERC1155Holder {
         
         // Create UpdateBestPrice task data for User1's order
         bytes memory updateTaskData = abi.encode(
+            uint256(SwapbookAVS.TaskType.UpdateBestPrice), // task_id
             Currency.unwrap(token0),
             Currency.unwrap(token1),
-            60, // tick (better price than pool's 1:1) - higher tick = better price for buying token0
+            60, // tick
             true,  // zeroForOne (selling token0 for token1)
             100e18, // inputAmount
-            0,     // outputAmount
+            100e18,     // outputAmount
             user1,  // user who placed the order
             false // useHigherTick
         );
@@ -947,12 +955,13 @@ contract SwapbookAVSIntegrationTest is Test, Deployers, ERC1155Holder {
         
         // Create UpdateBestPrice task data for User1's order
         bytes memory updateTaskData = abi.encode(
+            uint256(SwapbookAVS.TaskType.UpdateBestPrice), // task_id
             Currency.unwrap(token0),
             Currency.unwrap(token1),
-            0, // tick 
+            0, // tick
             true,  // zeroForOne (selling token0 for token1)
             100e18, // inputAmount
-            0,     // outputAmount
+            99e18,     // outputAmount (adjusted for realistic swap output)
             user1,  // user who placed the order
             false // useHigherTick
         );
@@ -983,7 +992,7 @@ contract SwapbookAVSIntegrationTest is Test, Deployers, ERC1155Holder {
         console.log("SwapbookV2 - Best tick:", bestTick);
         console.log("SwapbookV2 - Pending order amount:", pendingOrder);
         
-        assertEq(bestTick, 0, "Best tick should be 60");
+        assertEq(bestTick, 0, "Best tick should be 0");
         assertEq(pendingOrder, 100e18, "Pending order should be 100e18");
         
         // Verify OrderbookAVS also has the best order
@@ -1393,12 +1402,13 @@ contract SwapbookAVSIntegrationTest is Test, Deployers, ERC1155Holder {
         
         // Create UpdateBestPrice task data for User1's order at tick 100
         bytes memory updateTaskData = abi.encode(
+            uint256(SwapbookAVS.TaskType.UpdateBestPrice), // task_id
             Currency.unwrap(token0),
             Currency.unwrap(token1),
-            100, // tick 100
+            100, // tick
             true,  // zeroForOne (selling token0 for token1)
             100e18, // inputAmount
-            0,     // outputAmount
+            100e18,     // outputAmount
             user1,  // user who placed the order
             false // useHigherTick
         );
@@ -1635,12 +1645,13 @@ contract SwapbookAVSIntegrationTest is Test, Deployers, ERC1155Holder {
     function _placeOrderForComparisonWithUser(int24 tick, bool useHigherTick, address user) internal {        
         // Create UpdateBestPrice task data with useHigherTick parameter
         bytes memory updateTaskData = abi.encode(
+            uint256(SwapbookAVS.TaskType.UpdateBestPrice), // task_id
             Currency.unwrap(token0),
             Currency.unwrap(token1),
             tick,
             true,  // zeroForOne (selling token0 for token1)
             100e18, // inputAmount
-            0,     // outputAmount
+            100e18,     // outputAmount
             user,
             useHigherTick // Add the useHigherTick parameter
         );
