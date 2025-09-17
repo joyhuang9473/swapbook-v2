@@ -9,6 +9,7 @@ pragma solidity >=0.8.20;
 import {Script, console} from "forge-std/Script.sol";
 import {SwapbookV2} from "../src/SwapbookV2.sol";
 import {SwapbookAVS} from "../src/SwapbookAVS.sol";
+import {IAttestationCenter} from "../src/interface/IAttestationCenter.sol";
 import {MockERC20} from "solmate/src/test/utils/mocks/MockERC20.sol";
 
 contract SetupIntegration is Script {
@@ -36,11 +37,17 @@ contract SetupIntegration is Script {
         // Create contract instances
         SwapbookV2 swapbookV2 = SwapbookV2(swapbookV2Address);
         SwapbookAVS swapbookAVS = SwapbookAVS(swapbookAVSAddress);
+        IAttestationCenter attestationCenter = IAttestationCenter(attestationCenterAddress);
 
         // Step 1: Set attestation center in SwapbookAVS
         console.log("\n--- Step 1: Setting Attestation Center ---");
         swapbookAVS.setAttestationCenter(attestationCenterAddress);
         console.log("Attestation center set to:", swapbookAVS.attestationCenter());
+
+        // Step 1.5: Set AVS logic in Attestation Center
+        console.log("\n--- Step 1.5: Setting AVS Logic in Attestation Center ---");
+        attestationCenter.setAvsLogic(swapbookAVSAddress);
+        console.log("AVS logic set to SwapbookAVS address:", swapbookAVSAddress);
 
         // Step 2: Set SwapbookV2 in SwapbookAVS
         console.log("\n--- Step 2: Setting SwapbookV2 in SwapbookAVS ---");
@@ -62,10 +69,6 @@ contract SetupIntegration is Script {
         console.log("Token0 address:", token0Address);
         console.log("Token1 address:", token1Address);
         
-        // Import MockERC20 for approvals
-        MockERC20 token0 = MockERC20(token0Address);
-        MockERC20 token1 = MockERC20(token1Address);
-        
         // Have SwapbookAVS approve SwapbookV2 to spend tokens
         // This allows SwapbookAVS to place orders in SwapbookV2
         console.log("SwapbookAVS approving Token0 for SwapbookV2...");
@@ -85,14 +88,14 @@ contract SetupIntegration is Script {
         console.log("SwapbookAVS.owner():", swapbookAVS.owner());
         
         // Verify token approvals
-        console.log("Token0 allowance for SwapbookV2:", token0.allowance(swapbookAVSAddress, swapbookV2Address));
-        console.log("Token1 allowance for SwapbookV2:", token1.allowance(swapbookAVSAddress, swapbookV2Address));
+        console.log("Token0 allowance for SwapbookV2:", MockERC20(token0Address).allowance(swapbookAVSAddress, swapbookV2Address));
+        console.log("Token1 allowance for SwapbookV2:", MockERC20(token1Address).allowance(swapbookAVSAddress, swapbookV2Address));
 
         // Verify connections
         require(address(swapbookV2.swapbookAVS()) == swapbookAVSAddress, "SwapbookV2 not connected to SwapbookAVS");
         require(swapbookAVS.attestationCenter() == attestationCenterAddress, "Attestation center not set correctly");
-        require(token0.allowance(swapbookAVSAddress, swapbookV2Address) > 0, "Token0 not approved for SwapbookV2");
-        require(token1.allowance(swapbookAVSAddress, swapbookV2Address) > 0, "Token1 not approved for SwapbookV2");
+        require(MockERC20(token0Address).allowance(swapbookAVSAddress, swapbookV2Address) > 0, "Token0 not approved for SwapbookV2");
+        require(MockERC20(token1Address).allowance(swapbookAVSAddress, swapbookV2Address) > 0, "Token1 not approved for SwapbookV2");
 
         console.log("\n[SUCCESS] Integration setup complete!");
         console.log("[INFO] System is now ready for use:");
@@ -123,9 +126,10 @@ Environment Variables Required:
 
 What this script does:
 1. Sets the attestation center in SwapbookAVS
-2. Sets SwapbookV2 address in SwapbookAVS
-3. Sets SwapbookAVS address in SwapbookV2
-4. Approves SwapbookV2 to spend tokens from SwapbookAVS
-5. Verifies all connections and approvals are correct
-6. Confirms the system is ready for use
+2. Sets the AVS logic (SwapbookAVS) in the attestation center
+3. Sets SwapbookV2 address in SwapbookAVS
+4. Sets SwapbookAVS address in SwapbookV2
+5. Approves SwapbookV2 to spend tokens from SwapbookAVS
+6. Verifies all connections and approvals are correct
+7. Confirms the system is ready for use
 */
