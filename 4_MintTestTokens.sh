@@ -64,16 +64,8 @@ echo "🏗️  Token1 address: $TOKEN1_ADDRESS"
 echo "👤 User address: $USER_ADDRESS"
 echo "💰 Mint amount per token: $MINT_AMOUNT"
 
-# Build the project first
-echo "🔨 Building project..."
-forge build
-
-if [ $? -ne 0 ]; then
-    echo "❌ Build failed!"
-    exit 1
-fi
-
-echo "✅ Build successful"
+# Note: forge script will compile only the necessary files
+echo "🔨 Compiling script and dependencies..."
 
 # Mint test tokens
 echo "🚀 Minting test tokens to user..."
