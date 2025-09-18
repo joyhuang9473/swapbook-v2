@@ -70,16 +70,8 @@ echo "🏗️  Attestation Center address: $ATTESTATION_CENTER_ADDRESS"
 echo "🪙  Token0 address: $TOKEN0_ADDRESS"
 echo "🪙  Token1 address: $TOKEN1_ADDRESS"
 
-# Build the project first
-echo "🔨 Building project..."
-forge build
-
-if [ $? -ne 0 ]; then
-    echo "❌ Build failed!"
-    exit 1
-fi
-
-echo "✅ Build successful"
+# Note: forge script will compile only the necessary files
+echo "🔨 Compiling script and dependencies..."
 
 # Run the integration setup script
 echo "🚀 Setting up integration..."
