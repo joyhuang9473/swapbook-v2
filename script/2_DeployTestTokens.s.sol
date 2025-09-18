@@ -24,8 +24,8 @@ contract DeployTestTokens is Script {
 
         // Deploy test tokens
         console.log("\n--- Deploying MockERC20 Tokens ---");
-        MockERC20 tokenA = new MockERC20("TokenA", "TA", 18);
-        MockERC20 tokenB = new MockERC20("TokenB", "TB", 18);
+        MockERC20 tokenA = new MockERC20("TokenA", "TokenA", 18);
+        MockERC20 tokenB = new MockERC20("TokenB", "TokenB", 18);
         
         console.log("TokenA deployed at:", address(tokenA));
         console.log("TokenB deployed at:", address(tokenB));
