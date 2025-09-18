@@ -35,21 +35,13 @@ echo "✅ Environment variables loaded successfully"
 echo "📍 RPC URL: $BASE_TESTNET_RPC"
 echo "🔑 Private key: ${PRIVATE_KEY:0:10}...${PRIVATE_KEY: -4}"
 
-# Build the project first
-echo "🔨 Building project..."
-forge build
-
-if [ $? -ne 0 ]; then
-    echo "❌ Build failed!"
-    exit 1
-fi
-
-echo "✅ Build successful"
+# Note: forge script will compile only the necessary files
+echo "🔨 Compiling script and dependencies..."
 
 # Deploy test tokens
 echo "🚀 Deploying test tokens..."
 
-forge script script/3_DeployTestTokens.s.sol \
+forge script script/2_DeployTestTokens.s.sol \
     --rpc-url "$BASE_TESTNET_RPC" \
     --private-key "$PRIVATE_KEY" \
     --broadcast \
