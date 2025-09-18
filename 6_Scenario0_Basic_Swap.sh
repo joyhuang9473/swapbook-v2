@@ -67,7 +67,7 @@ echo ""
 echo "Running Scenario 0: Basic Swap (Actual Execution)..."
 echo ""
 
-forge script script/Scenario0_Basic_Swap.s.sol \
+forge script script/6_Scenario0_Basic_Swap.s.sol \
     --rpc-url $BASE_TESTNET_RPC \
     --private-key $UNISWAP_USER_PRIVATE_KEY \
     --broadcast \
