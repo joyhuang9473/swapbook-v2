@@ -45,8 +45,13 @@ if [ -z "$TOKEN1_ADDRESS" ]; then
     exit 1
 fi
 
-if [ -z "$USER_ADDRESS" ]; then
-    echo "❌ Error: USER_ADDRESS not found in .env file"
+if [ -z "$SWAPBOOK_USER_ADDRESS" ]; then
+    echo "❌ Error: SWAPBOOK_USER_ADDRESS not found in .env file"
+    exit 1
+fi
+
+if [ -z "$UNISWAP_USER_ADDRESS" ]; then
+    echo "❌ Error: UNISWAP_USER_ADDRESS not found in .env file"
     exit 1
 fi
 
